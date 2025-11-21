@@ -50,11 +50,11 @@ jobs:
             cd ${{ env.VPS_COMPOSE_DIR }}
             
             echo "Pulling the latest Docker image"
-            docker-compose pull hzchat_server
+            docker compose pull hzchat_server
             
             echo "Restarting hzchat_server service to apply the new image"
-            docker-compose up -d --no-deps --force-recreate hzchat_server
+            docker compose up -d --no-deps --force-recreate hzchat_server
             
-            docker-compose ps
+            docker compose ps
             
             echo "Deployment completed successfully. Service is running with the latest image."
