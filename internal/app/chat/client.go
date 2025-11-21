@@ -1,0 +1,352 @@
+/*
+Package chat contains the core logic for handling real-time chat rooms, user connections, and message broadcasting.
+
+This file defines the Client struct, representing an active WebSocket connection. It manages the client's
+lifecycle, message communication loops (ReadPump and WritePump), and interaction with the Room.
+*/
+package chat
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/gorilla/websocket"
+
+	"hzchat/internal/app/user"
+	"hzchat/internal/pkg/errs"
+	"hzchat/internal/pkg/logx"
+
+	"github.com/rs/zerolog"
+)
+
+const (
+	// timeout duration for writing to the WebSocket connection.
+	writeWait = 10 * time.Second
+
+	// maximum time allowed for the server to wait for a Pong message from the client.
+	pongWait = 30 * time.Second
+
+	// frequency at which the server sends a Ping message.
+	pingPeriod = (pongWait * 9) / 10
+
+	// maximum allowed size (in bytes) of a message sent by the client.
+	maxMessageSize = 8192
+
+	// maximum allowed size (in bytes) for text message content.
+	MaxContentBytes = 5000
+
+	// WsCloseCodeSessionKicked is a custom WebSocket Close Code (4000-4999 range)
+	// used to signal the client that the session was replaced by a new connection.
+	WsCloseCodeSessionKicked = 4001
+)
+
+// Client struct represents an active WebSocket connection and its associated user.
+type Client struct {
+	// the chat room the client currently belongs to.
+	room *Room
+
+	// underlying WebSocket connection object.
+	conn *websocket.Conn
+
+	// associated client user.
+	user user.User
+
+	// a buffered channel used to queue messages waiting to be sent to the client.
+	send chan []byte
+
+	// structured logger with client and room context.
+	logger zerolog.Logger
+}
+
+// NewClient constructs and returns a new Client instance.
+func NewClient(room *Room, wsConn *websocket.Conn, user user.User) *Client {
+	clientLogger := logx.Logger().With().
+		Str("client_id", user.ID).
+		Str("room_code", room.Code).
+		Logger()
+
+	client := &Client{
+		room:   room,
+		conn:   wsConn,
+		user:   user,
+		send:   make(chan []byte, 256),
+		logger: clientLogger,
+	}
+
+	return client
+}
+
+// ReadPump handles reading messages from the WebSocket connection.
+// It handles heartbeats (Pong), message parsing, and performs cleanup upon connection closure.
+func (c *Client) ReadPump() {
+	defer func() {
+		c.logger.Info().Msg("Client connection cleanup starting")
+		select {
+		case c.room.unregister <- c:
+		default:
+			c.logger.Warn().Msg("Room unregister channel blocked. Connection cleanup still proceeding.")
+		}
+
+		if err := c.conn.Close(); err != nil {
+			c.logger.Error().Err(err).Msg("Client connection close error")
+		}
+	}()
+
+	c.conn.SetReadLimit(maxMessageSize)
+
+	if err := c.conn.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
+		c.logger.Error().Err(err).Msg("Failed to set read deadline")
+		return
+	}
+
+	c.conn.SetPongHandler(func(string) error {
+		return c.conn.SetReadDeadline(time.Now().Add(pongWait))
+	})
+
+	for {
+		_, messageBytes, err := c.conn.ReadMessage()
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
+				c.logger.Info().Err(err).Msg("Error reading message (Client close/going away)")
+			}
+			break
+		}
+
+		c.processInboundMessage(messageBytes)
+	}
+}
+
+// processInboundMessage handles raw byte messages received from the client.
+func (c *Client) processInboundMessage(messageBytes []byte) {
+	var inboundMsg struct {
+		Type    MessageType     `json:"type"`
+		Payload json.RawMessage `json:"payload,omitempty"`
+		TempID  string          `json:"tempID,omitempty"`
+	}
+
+	if err := json.Unmarshal(messageBytes, &inboundMsg); err != nil {
+		c.logger.Warn().Err(err).
+			Bytes("message_bytes", messageBytes).
+			Msg("Client sent invalid JSON")
+		return
+	}
+
+	if inboundMsg.Type != TypeText {
+		c.logger.Warn().Str("msg_type", string(inboundMsg.Type)).Msg("Client sent unsupported message type")
+		return
+	}
+
+	var textPayload TextPayload
+	if err := json.Unmarshal(inboundMsg.Payload, &textPayload); err != nil {
+		c.logger.Warn().Err(err).Msg("Client sent invalid TEXT payload")
+		return
+	}
+
+	if len(textPayload.Content) > MaxContentBytes {
+		c.logger.Warn().
+			Int("content_length", len(textPayload.Content)).
+			Int("limit", MaxContentBytes).
+			Msg("Client sent message content exceeding max byte limit. Rejecting.")
+
+		c.SendError(errs.NewError(errs.ErrMessageContentTooLong))
+		return
+	}
+
+	broadcastMsg, err := NewMessage(
+		TypeText,
+		c.room.Code,
+		c.user,
+		textPayload,
+	)
+
+	if err != nil {
+		c.logger.Error().Err(err).Msg("Failed to create new message for broadcast")
+		return
+	}
+
+	c.sendConfirmation(inboundMsg.TempID, broadcastMsg)
+
+	c.room.broadcast <- broadcastMsg
+}
+
+// WritePump handles writing messages from the Client.send channel to the WebSocket connection.
+func (c *Client) WritePump() {
+	ticker := time.NewTicker(pingPeriod)
+
+	defer func() {
+		ticker.Stop()
+
+		if err := c.conn.Close(); err != nil {
+			c.logger.Error().Err(err).Msg("Client connection close error in WritePump")
+		}
+	}()
+
+	for {
+		select {
+		case message, ok := <-c.send:
+			if err := c.conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
+				c.logger.Error().Err(err).Msg("Failed to set write deadline")
+				return
+			}
+
+			if !ok {
+				if err := c.conn.WriteMessage(websocket.CloseMessage, []byte{}); err != nil {
+					c.logger.Error().Err(err).Msg("Error writing close message")
+				}
+				return
+			}
+
+			if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
+				c.logger.Error().Err(err).Msg("Error writing message")
+				return
+			}
+
+		case <-ticker.C:
+			if err := c.conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
+				c.logger.Error().Err(err).Msg("Failed to set write deadline on ping")
+				return
+			}
+
+			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				c.logger.Error().Err(err).Msg("Error writing ping")
+				return
+			}
+		}
+	}
+}
+
+// sendMessage marshals the data and attempts to send it to the client's send channel.
+func (c *Client) sendMessage(data any) error {
+	messageBytes, err := json.Marshal(data)
+	if err != nil {
+		c.logger.Error().Err(err).Msg("Error marshaling data for client")
+		return err
+	}
+
+	select {
+	case c.send <- messageBytes:
+		return nil
+	default:
+		c.logger.Warn().Int("queue_len", len(c.send)).Msg("Client send channel full, dropping message")
+		return fmt.Errorf("client send queue full")
+	}
+}
+
+// SendError constructs and sends a TypeError message to the client.
+func (c *Client) SendError(err error) {
+	var code int
+	var message string
+
+	var customErr *errs.CustomError
+	if errors.As(err, &customErr) {
+		code = customErr.Code
+		message = customErr.Message
+	} else {
+		code = errs.ErrUnknown
+		message = fmt.Sprintf("Internal server error: %v", err)
+	}
+
+	errorPayload := ErrorPayload{
+		Code:    code,
+		Message: message,
+	}
+
+	errorMsg, msgErr := NewMessage(
+		TypeError,
+		c.room.Code,
+		SystemUser,
+		errorPayload,
+	)
+
+	if msgErr != nil {
+		logx.Fatal(msgErr, "Failed to build error message in SendError")
+		return
+	}
+
+	if err := c.sendMessage(errorMsg); err != nil {
+		c.logger.Error().Err(err).Msg("Failed to queue error message")
+	}
+}
+
+// SendInitData constructs and sends a TypeInitData message containing the initial room state information.
+func (c *Client) SendInitData(payload InitDataPayload) error {
+	initMsg, err := NewMessage(
+		TypeInitData,
+		c.room.Code,
+		SystemUser,
+		payload,
+	)
+
+	if err != nil {
+		c.logger.Error().Err(err).Msg("Failed to build INIT_DATA message.")
+		return err
+	}
+
+	if err := c.sendMessage(initMsg); err != nil {
+		c.logger.Error().Err(err).Msg("Failed to send INIT_DATA message.")
+		return err
+	}
+
+	return nil
+}
+
+// sendConfirmation constructs and sends a TypeConfirm (ACK) message back to the sender.
+func (c *Client) sendConfirmation(originalTempID string, authoritativeMsg Message) {
+	if originalTempID == "" {
+		return
+	}
+
+	ackPayload := struct {
+		OriginalTempID string `json:"tempID"`
+		MessageID      string `json:"id"`
+		Timestamp      int64  `json:"timestamp"`
+	}{
+		OriginalTempID: originalTempID,
+		MessageID:      authoritativeMsg.ID,
+		Timestamp:      authoritativeMsg.Timestamp,
+	}
+
+	ackMsg, err := NewMessage(
+		TypeConfirm,
+		c.room.Code,
+		c.user,
+		ackPayload,
+	)
+
+	if err != nil {
+		c.logger.Error().Err(err).Msg("Failed to build ACK message in sendConfirmation")
+		return
+	}
+
+	if err := c.sendMessage(ackMsg); err != nil {
+		c.logger.Error().Err(err).Msg("Failed to queue ACK message")
+	}
+}
+
+// Kick gracefully closes the client's connection by sending a custom WebSocket
+// Close Frame (Code 4001) indicating that the session was replaced.
+func (c *Client) Kick(reason string) {
+	c.logger.Warn().
+		Int("close_code", WsCloseCodeSessionKicked).
+		Str("reason", reason).
+		Msg("Sending WS Kick message and closing connection.")
+
+	closeMessage := websocket.FormatCloseMessage(
+		WsCloseCodeSessionKicked,
+		reason,
+	)
+
+	c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+
+	if err := c.conn.WriteMessage(websocket.CloseMessage, closeMessage); err != nil {
+		c.logger.Warn().Err(err).Msg("Failed to send WS 4001 Close Message.")
+	}
+
+	select {
+	case <-c.send:
+	default:
+		close(c.send)
+	}
+}
