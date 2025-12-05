@@ -17,6 +17,7 @@ import (
 
 	"hzchat/internal/app/chat"
 	"hzchat/internal/configs"
+	"hzchat/internal/pkg/auth/jwt"
 	"hzchat/internal/pkg/limiter"
 	"hzchat/internal/pkg/logx"
 	"hzchat/internal/pkg/resp"
@@ -40,11 +41,13 @@ const (
 // It initializes IP-based rate limiters, configures CORS, and applies global and per-route middleware.
 // It requires the chat.Manager for business logic and the AppConfig for settings (like allowed origins).
 func Router(manager *chat.Manager, cfg *configs.AppConfig) http.Handler {
+	// Initialize IP-based rate limiters for create and join endpoints
 	createLimiter := limiter.NewIPRateLimiter(rate.Limit(CreateRate), CreateBurst)
 	joinLimiter := limiter.NewIPRateLimiter(rate.Limit(JoinRate), JoinBurst)
 
 	r := chi.NewRouter()
 
+	// Configure WebSocket upgrader with origin checking based on allowed origins
 	allowedOrigins := make(map[string]struct{})
 	for _, origin := range cfg.AllowedOrigins {
 		allowedOrigins[origin] = struct{}{}
@@ -75,6 +78,7 @@ func Router(manager *chat.Manager, cfg *configs.AppConfig) http.Handler {
 		corsAllowedOrigins = cfg.AllowedOrigins
 	}
 
+	// Apply CORS middleware
 	c := cors.New(cors.Options{
 		AllowedOrigins:   corsAllowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
@@ -90,6 +94,7 @@ func Router(manager *chat.Manager, cfg *configs.AppConfig) http.Handler {
 	r.Use(logx.RequestLogger())
 	r.Use(middleware.Recoverer)
 
+	// Health check endpoint
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		logx.Info("Health check endpoint hit")
 
@@ -101,13 +106,19 @@ func Router(manager *chat.Manager, cfg *configs.AppConfig) http.Handler {
 	})
 
 	r.Route("/api", func(api chi.Router) {
+		// Middleware to extract identity from JWT for all /api routes
+		api.Use(jwt.IdentityExtractorMiddleware(cfg.JWTSecret))
+
+		// Create chat room
 		rateLimitedCreateHandler := createLimiter.Middleware(HandleCreateRoom(manager))
 		api.Post("/chat/create", http.HandlerFunc(rateLimitedCreateHandler.ServeHTTP))
 
-		api.Get("/chat/{code}/check", HandleCheckRoomStatus(manager))
+		// Join chat room
+		api.Post("/chat/join", HandleJoinRoom(manager, cfg))
 	})
 
-	r.Get("/ws/{code}", HandleWebSocket(manager, wsUpgrader, joinLimiter))
+	// WebSocket endpoint for chat
+	r.Get("/ws/{code}", HandleWebSocket(manager, wsUpgrader, joinLimiter, cfg))
 
 	return r
 }

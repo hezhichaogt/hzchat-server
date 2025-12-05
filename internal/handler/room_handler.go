@@ -6,9 +6,9 @@ package handler
 import (
 	"net/http"
 
-	"github.com/go-chi/chi/v5"
-
 	"hzchat/internal/app/chat"
+	"hzchat/internal/configs"
+	"hzchat/internal/pkg/auth/jwt"
 	"hzchat/internal/pkg/errs"
 	"hzchat/internal/pkg/logx"
 	"hzchat/internal/pkg/randx"
@@ -76,34 +76,69 @@ func HandleCreateRoom(manager *chat.Manager) http.HandlerFunc {
 	}
 }
 
-// HandleCheckRoomStatus creates an HTTP HandlerFunc to check the status of a specified room.
-// It validates the room code format, checks for room existence, and determines if the room is full.
-func HandleCheckRoomStatus(manager *chat.Manager) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		roomCode := chi.URLParam(r, "code")
+// JoinRoomInput defines the JSON input structure received by the room join API endpoint.
+type JoinRoomInput struct {
+	// Code is the code of the chat room to join.
+	Code string `json:"code" validate:"required"`
 
-		if !randx.IsValidRoomCode(roomCode) {
-			logx.Warn("Invalid room code parameter", "room_code", roomCode)
+	// GuestID is the unique identifier for a guest.
+	GuestID string `json:"guestID"`
+}
+
+// HandleJoinRoom processes the request to join a room.
+func HandleJoinRoom(manager *chat.Manager, cfg *configs.AppConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var input JoinRoomInput
+		if customErr := req.BindJSON(r, &input); customErr != nil {
+			logx.Warn("Failed to bind JSON for room join", "error", customErr)
+			resp.RespondError(w, r, customErr)
+			return
+		}
+
+		code := input.Code
+		guestID := input.GuestID
+
+		if !randx.IsValidGuestID(guestID) {
+			logx.Warn("Invalid GuestID format or length", "guest_id", guestID, "room_code", code)
 			resp.RespondError(w, r, errs.NewError(errs.ErrInvalidParams))
 			return
 		}
 
-		room := manager.GetRoom(roomCode)
+		if !randx.IsValidRoomCode(code) {
+			resp.RespondError(w, r, errs.NewError(errs.ErrInvalidParams))
+			return
+		}
+
+		room := manager.GetRoom(code)
 		if room == nil {
-			logx.Info("Room not found", "room_code", roomCode)
+			logx.Info("Room not found", "room_code", code)
 			resp.RespondError(w, r, errs.NewError(errs.ErrRoomNotFound))
 			return
 		}
 
-		if room.IsFull() {
-			logx.Info("Room is full", "room_code", roomCode)
+		if room.IsFull(guestID) {
+			logx.Info("Room is full for new joiner", "room_code", code)
 			resp.RespondError(w, r, errs.NewError(errs.ErrRoomIsFull))
 			return
 		}
 
-		checkInfo := map[string]any{
-			"canJoin": true,
+		// Generate token
+		payload := &jwt.Payload{
+			ID:       guestID,
+			Code:     code,
+			UserType: "guest",
 		}
-		resp.RespondSuccess(w, r, checkInfo)
+
+		tokenString, err := jwt.GenerateToken(payload, cfg.JWTSecret)
+		if err != nil {
+			logx.Warn("Failed to generate JWT token", "error", err)
+			resp.RespondError(w, r, errs.NewError(errs.ErrUnknown))
+			return
+		}
+
+		data := map[string]any{
+			"token": tokenString,
+		}
+		resp.RespondSuccess(w, r, data)
 	}
 }

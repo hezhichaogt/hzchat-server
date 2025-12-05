@@ -15,6 +15,8 @@ import (
 
 	"hzchat/internal/app/chat"
 	"hzchat/internal/app/user"
+	"hzchat/internal/configs"
+	"hzchat/internal/pkg/auth/jwt"
 	"hzchat/internal/pkg/errs"
 	"hzchat/internal/pkg/limiter"
 	"hzchat/internal/pkg/logx"
@@ -22,8 +24,9 @@ import (
 )
 
 // HandleWebSocket creates an HTTP HandlerFunc to process WebSocket connection requests.
-func HandleWebSocket(manager *chat.Manager, upgrader websocket.Upgrader, rateLimiter *limiter.IPRateLimiter) http.HandlerFunc {
+func HandleWebSocket(manager *chat.Manager, upgrader websocket.Upgrader, rateLimiter *limiter.IPRateLimiter, cfg *configs.AppConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Extract client IP address for rate limiting
 		ip, _, err := net.SplitHostPort(r.RemoteAddr)
 		if err != nil {
 			ip = r.RemoteAddr
@@ -40,6 +43,7 @@ func HandleWebSocket(manager *chat.Manager, upgrader websocket.Upgrader, rateLim
 			return
 		}
 
+		// Extract room code from URL parameters
 		roomCode := chi.URLParam(r, "code")
 		if roomCode == "" {
 			logx.Warn("WebSocket request rejected: Missing room code")
@@ -47,34 +51,58 @@ func HandleWebSocket(manager *chat.Manager, upgrader websocket.Upgrader, rateLim
 			return
 		}
 
+		// Extract and validate JWT token from query parameters
 		query := r.URL.Query()
-		userID := query.Get("uid")
-		nickName := query.Get("nn")
+		tokenString := query.Get("token")
 
+		if tokenString == "" {
+			logx.Warn("WebSocket request rejected: Missing 'token' query parameter.", "room_code", roomCode)
+			resp.RespondError(w, r, errs.NewError(errs.ErrInvalidParams))
+			return
+		}
+
+		payload, err := jwt.ParseToken(tokenString, cfg.JWTSecret)
+		if err != nil {
+			logx.Warn("Failed to parse or validate JWT for WebSocket.", "room_code", roomCode, "error", err)
+			resp.RespondError(w, r, errs.NewError(errs.ErrInvalidParams))
+			return
+		}
+
+		if payload.Code != roomCode {
+			logx.Warn("JWT room code mismatch.", "expected_code", roomCode, "token_code", payload.Code)
+			resp.RespondError(w, r, errs.NewError(errs.ErrInvalidParams))
+			return
+		}
+
+		userID := payload.ID
+		userType := payload.UserType
+		nickName := query.Get("nn")
 		if userID == "" || nickName == "" {
 			logx.Warn("WebSocket request rejected: Missing uid or nn query parameters", "room_code", roomCode)
 			resp.RespondError(w, r, errs.NewError(errs.ErrInvalidParams))
 			return
 		}
 
+		// check if room exists and if it's full
 		room := manager.GetRoom(roomCode)
+
 		if room == nil {
 			logx.Info("WebSocket connection rejected: Room not found.", "room_code", roomCode)
 			resp.RespondError(w, r, errs.NewError(errs.ErrRoomNotFound))
 			return
 		}
-		if room.IsFull() {
+
+		if room.IsFull(userID) {
 			logx.Info("WebSocket connection rejected: Room is full.", "room_code", roomCode)
 			resp.RespondError(w, r, errs.NewError(errs.ErrRoomIsFull))
 			return
 		}
 
-		logx.Info("Attempting to upgrade connection", "room_code", roomCode, "user_id", userID)
-
 		currentUser := user.User{
 			ID:       userID,
 			Nickname: nickName,
 			Avatar:   "",
+			UserType: userType,
 		}
 
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -83,14 +111,18 @@ func HandleWebSocket(manager *chat.Manager, upgrader websocket.Upgrader, rateLim
 			return
 		}
 
+		// Create a new chat client
 		client := chat.NewClient(room, conn, currentUser)
 
+		// Start the client's write pump in a new goroutine
 		go client.WritePump()
 
 		logx.Info("WebSocket connection established and client registered", "client_id", userID, "room_code", roomCode)
 
+		// Register the client with the room
 		room.RegisterClient(client)
 
+		// Start the client's read pump (blocking call)
 		client.ReadPump()
 	}
 }
