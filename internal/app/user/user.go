@@ -18,4 +18,7 @@ type User struct {
 
 	// Avatar is the URL for the user's avatar (currently unimplemented but reserved).
 	Avatar string `json:"avatar,omitempty"`
+
+	// UserType defines the role/status of the participant (e.g., "guest", "registered").
+	UserType string `json:"userType"`
 }
