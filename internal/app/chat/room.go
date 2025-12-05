@@ -34,37 +34,24 @@ const (
 
 // Room struct represents a single, active chat room session.
 type Room struct {
-	// unique identifier for the room.
-	Code string
-
-	// maximum number of users allowed in the room.
+	Code       string
 	MaxClients int
 
-	// a map of currently connected clients, keyed by their user ID.
+	// Core state
 	clients map[string]*Client
 
-	// a buffered channel for incoming messages to be sent to all clients.
-	broadcast chan Message
-
-	// a channel for clients requesting to join the room.
-	register chan *Client
-
-	// a channel for clients requesting to leave the room.
+	// Channels for concurrency
+	broadcast  chan Message
+	register   chan *Client
 	unregister chan *Client
 
-	// a write-only channel used to notify the Chat Manager to clean up this room.
-	cleanupChan chan<- RoomCleanupMsg
-
-	// used to signal the Room to stop its Run loop immediately.
-	stopChan chan struct{}
-
-	// the timer used to track room inactivity.
+	// Control & Synchronization
+	cleanupChan   chan<- RoomCleanupMsg
+	stopChan      chan struct{}
 	shutdownTimer *time.Timer
+	mu            sync.RWMutex
 
-	// mu protects access to the clients map.
-	mu sync.RWMutex
-
-	// structured logger with room context.
+	// Context
 	logger zerolog.Logger
 }
 
@@ -102,233 +89,276 @@ func (r *Room) Stop() {
 // Run starts the main event loop for the Room.
 // It handles client registration, deregistration, message broadcasting, and room shutdown.
 func (r *Room) Run() {
-	defer func() {
-		r.logger.Info().Msg("Room Run loop finished. Notifying Manager for cleanup.")
-
-		if r.shutdownTimer != nil {
-			r.shutdownTimer.Stop()
-		}
-
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					logx.Warn("Recovered from panic during Manager cleanup notification (channel likely closed).")
-				}
-			}()
-
-			select {
-			case r.cleanupChan <- RoomCleanupMsg{RoomCode: r.Code}:
-				r.logger.Info().Msg("Sent cleanup notification to Manager.")
-			default:
-				r.logger.Warn().Msg("Manager cleanup channel blocked/full. Skipping cleanup notification.")
-			}
-		}()
-
-		r.mu.Lock()
-		for _, client := range r.clients {
-			select {
-			case <-client.send:
-			default:
-				close(client.send)
-			}
-		}
-		r.mu.Unlock()
-
-		select {
-		case <-r.broadcast:
-		default:
-			close(r.broadcast)
-		}
-		select {
-		case <-r.register:
-		default:
-			close(r.register)
-		}
-		select {
-		case <-r.unregister:
-		default:
-			close(r.unregister)
-		}
-	}()
+	defer r.cleanupOnExit()
 
 	timerChan := r.shutdownTimer.C
 
 	for {
 		select {
 		case client := <-r.register:
-			r.mu.Lock()
-
-			if existingClient, ok := r.clients[client.user.ID]; ok {
-				r.logger.Warn().
-					Str("client_id", client.user.ID).
-					Msg("Client ID already connected. Closing old connection for replacement.")
-
-				existingClient.Kick("Session replaced by new connection. Check other tabs.")
-			}
-
-			if r.shutdownTimer != nil {
-				if r.shutdownTimer.Stop() {
-					select {
-					case <-r.shutdownTimer.C:
-					default:
-					}
-				}
-			}
-
-			if _, exists := r.clients[client.user.ID]; !exists && r.MaxClients > 0 && len(r.clients) >= r.MaxClients {
-				r.logger.Warn().
-					Int("max_clients", r.MaxClients).
-					Str("client_id", client.user.ID).
-					Msg("Room is full. New unique client rejected.")
-
-				client.SendError(fmt.Errorf("room is full"))
-				select {
-				case <-client.send:
-				default:
-					close(client.send)
-				}
-				r.mu.Unlock()
-				continue
-			}
-
-			r.clients[client.user.ID] = client
-			r.logger.Info().
-				Str("client_id", client.user.ID).
-				Int("total_users", len(r.clients)).
-				Msg("Client joined room.")
-
-			onlineUsers := make([]user.User, 0, len(r.clients))
-			for _, c := range r.clients {
-				onlineUsers = append(onlineUsers, c.user)
-			}
-
-			initDataPayload := InitDataPayload{
-				CurrentUser: client.user,
-				OnlineUsers: onlineUsers,
-				MaxUsers:    r.MaxClients,
-			}
-
-			r.mu.Unlock()
-
-			err := client.SendInitData(initDataPayload)
-			if err != nil {
-				r.unregister <- client
-				continue
-			}
-
-			msg, err := NewMessage(TypeUserJoined, r.Code, SystemUser, UserEventPayload{User: client.user})
-			if err != nil {
-				r.logger.Error().
-					Str("client_id", client.user.ID).
-					Err(err).
-					Msg("Failed to build USER_JOINED message.")
-			} else {
-				select {
-				case r.broadcast <- msg:
-				default:
-					r.logger.Warn().Msg("Broadcast channel full during USER_JOINED.")
-				}
-			}
+			r.handleRegister(client)
 
 		case client := <-r.unregister:
-			r.mu.Lock()
-
-			if currentClient, ok := r.clients[client.user.ID]; ok && currentClient == client {
-				delete(r.clients, client.user.ID)
-
-				select {
-				case <-client.send:
-				default:
-					close(client.send)
-				}
-
-				r.logger.Info().
-					Str("client_id", client.user.ID).
-					Int("total_users", len(r.clients)).
-					Msg("Client left room.")
-
-				msg, err := NewMessage(TypeUserLeft, r.Code, SystemUser, UserEventPayload{User: client.user})
-				if err != nil {
-					r.logger.Error().
-						Str("client_id", client.user.ID).
-						Err(err).
-						Msg("Failed to build USER_LEFT message during cleanup.")
-				} else {
-					select {
-					case r.broadcast <- msg:
-					default:
-						r.logger.Warn().Msg("Broadcast channel full during USER_LEFT.")
-					}
-				}
-			} else if ok && currentClient != client {
-				r.logger.Info().
-					Str("stale_client_id", client.user.ID).
-					Msg("Ignoring unregister for STALE connection.")
-
-			} else {
-				r.logger.Warn().
-					Str("client_id", client.user.ID).
-					Msg("Unregister failed for unknown/already deleted client.")
-			}
-
-			if len(r.clients) == 0 {
-				r.logger.Info().Msg("Room is empty. Shutting down Room.Run() loop.")
-				if r.shutdownTimer.Stop() {
-					select {
-					case <-r.shutdownTimer.C:
-					default:
-					}
-				}
-				r.shutdownTimer.Reset(RoomInactivityTimeout)
-			}
-
-			r.mu.Unlock()
+			r.handleUnregister(client)
 
 		case message := <-r.broadcast:
-			if message.Type == TypeError {
-				r.logger.Warn().
-					Interface("message", message).
-					Msg("Received unhandled TypeError in broadcast channel.")
-				continue
-			}
-
-			messageBytes, err := json.Marshal(message)
-			if err != nil {
-				r.logger.Error().
-					Str("message_id", message.ID).
-					Err(err).
-					Msg("Error marshaling message for broadcast.")
-				continue
-			}
-
-			r.mu.RLock()
-			senderID := message.Sender.ID
-			for _, client := range r.clients {
-				if client.user.ID != senderID {
-					select {
-					case client.send <- messageBytes:
-					default:
-						r.logger.Warn().
-							Str("client_id", client.user.ID).
-							Msg("Client send channel full or closed, unregistering.")
-
-						select {
-						case r.unregister <- client:
-						default:
-							r.logger.Warn().Msg("Unregister channel full, skipping client cleanup.")
-						}
-					}
-				}
-			}
-			r.mu.RUnlock()
+			r.handleBroadcast(message)
 
 		case <-timerChan:
-			r.logger.Info().Msgf("Room inactivity timeout (%s) reached. Shutting down Room.Run() loop.", RoomInactivityTimeout)
+			r.logger.Info().Msgf("Room inactivity timeout (%s) reached. Shutting down loop.", RoomInactivityTimeout)
 			return
 
 		case <-r.stopChan:
 			r.logger.Info().Msg("Room forced stop initiated.")
 			return
+		}
+	}
+}
+
+// cleanupOnExit performs necessary cleanup actions when the Room's Run loop exits.
+func (r *Room) cleanupOnExit() {
+	r.logger.Info().Msg("Room Run loop finished. Notifying Manager for cleanup.")
+
+	// stop the shutdown timer if it's still running
+	if r.shutdownTimer != nil {
+		r.shutdownTimer.Stop()
+	}
+
+	// notify Manager for cleanup
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logx.Warn("Recovered from panic during Manager cleanup notification (channel likely closed).")
+			}
+		}()
+
+		select {
+		case r.cleanupChan <- RoomCleanupMsg{RoomCode: r.Code}:
+			r.logger.Info().Msg("Sent cleanup notification to Manager.")
+		default:
+			r.logger.Warn().Msg("Manager cleanup channel blocked/full. Skipping cleanup notification.")
+		}
+	}()
+
+	// 3. Close all client send channels
+	r.mu.Lock()
+	for _, client := range r.clients {
+		select {
+		case <-client.send:
+		default:
+			close(client.send)
+		}
+	}
+	r.mu.Unlock()
+
+	// 4. Safely close Room's own input channels
+	select {
+	case <-r.broadcast:
+	default:
+		close(r.broadcast)
+	}
+	select {
+	case <-r.register:
+	default:
+		close(r.register)
+	}
+	select {
+	case <-r.unregister:
+	default:
+		close(r.unregister)
+	}
+}
+
+// handleRegister manages the entire lifecycle logic for a client joining the room.
+func (r *Room) handleRegister(client *Client) {
+	r.mu.Lock()
+
+	// Check if client already exists, kick old connection if so
+	if existingClient, ok := r.clients[client.user.ID]; ok {
+		r.logger.Warn().
+			Str("client_id", client.user.ID).
+			Msg("Client ID already connected. Closing old connection for replacement.")
+
+		existingClient.Kick("Session replaced by new connection. Check other tabs.")
+	}
+
+	// stop shutdown timer if running
+	if r.shutdownTimer != nil {
+		if r.shutdownTimer.Stop() {
+			select {
+			case <-r.shutdownTimer.C:
+			default:
+			}
+		}
+	}
+
+	// check room capacity
+	if _, exists := r.clients[client.user.ID]; !exists && r.MaxClients > 0 && len(r.clients) >= r.MaxClients {
+		r.logger.Warn().
+			Int("max_clients", r.MaxClients).
+			Str("client_id", client.user.ID).
+			Msg("Room is full. New unique client rejected.")
+
+		client.SendError(fmt.Errorf("room is full"))
+		select {
+		case <-client.send:
+		default:
+			close(client.send)
+		}
+		r.mu.Unlock()
+		return
+	}
+
+	// Register client
+	r.clients[client.user.ID] = client
+	r.logger.Info().
+		Str("client_id", client.user.ID).
+		Int("total_users", len(r.clients)).
+		Msg("Client joined room.")
+
+	// Prepare initial data
+	onlineUsers := make([]user.User, 0, len(r.clients))
+	for _, c := range r.clients {
+		onlineUsers = append(onlineUsers, c.user)
+	}
+
+	initDataPayload := InitDataPayload{
+		CurrentUser: client.user,
+		OnlineUsers: onlineUsers,
+		MaxUsers:    r.MaxClients,
+	}
+
+	r.mu.Unlock()
+
+	// Send initial data
+	err := client.SendInitData(initDataPayload)
+	if err != nil {
+		r.unregister <- client
+		return
+	}
+
+	// Broadcast join event
+	msg, err := NewMessage(TypeUserJoined, r.Code, SystemUser, UserEventPayload{User: client.user})
+	if err != nil {
+		r.logger.Error().
+			Str("client_id", client.user.ID).
+			Err(err).
+			Msg("Failed to build USER_JOINED message.")
+	} else {
+		select {
+		case r.broadcast <- msg:
+		default:
+			r.logger.Warn().Msg("Broadcast channel full during USER_JOINED.")
+		}
+	}
+}
+
+// handleUnregister manages the entire lifecycle logic for a client leaving the room.
+func (r *Room) handleUnregister(client *Client) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// delete client if it exists and matches the current connection
+	if currentClient, ok := r.clients[client.user.ID]; ok && currentClient == client {
+		delete(r.clients, client.user.ID)
+
+		select {
+		case <-client.send:
+		default:
+			close(client.send)
+		}
+
+		r.logger.Info().
+			Str("client_id", client.user.ID).
+			Int("total_users", len(r.clients)).
+			Msg("Client left room.")
+
+		// Broadcast leave event
+		msg, err := NewMessage(TypeUserLeft, r.Code, SystemUser, UserEventPayload{User: client.user})
+		if err != nil {
+			r.logger.Error().
+				Str("client_id", client.user.ID).
+				Err(err).
+				Msg("Failed to build USER_LEFT message during cleanup.")
+		} else {
+			select {
+			case r.broadcast <- msg:
+			default:
+				r.logger.Warn().Msg("Broadcast channel full during USER_LEFT.")
+			}
+		}
+
+		// 4. Inactivity timer logic
+		if len(r.clients) == 0 {
+			r.logger.Info().Msg("Room is empty. Restarting shutdown timer.")
+
+			// Stop and drain the old timer signal (if the timer was running), then reset
+			if r.shutdownTimer.Stop() {
+				select {
+				case <-r.shutdownTimer.C:
+				default:
+				}
+			}
+			r.shutdownTimer.Reset(RoomInactivityTimeout)
+		}
+
+	} else if ok && currentClient != client {
+		// Client ID exists but is not the current connection
+		r.logger.Info().
+			Str("stale_client_id", client.user.ID).
+			Msg("Ignoring unregister for STALE connection.")
+
+	} else {
+		// Client ID does not exist
+		r.logger.Warn().
+			Str("client_id", client.user.ID).
+			Msg("Unregister failed for unknown/already deleted client.")
+	}
+}
+
+// handleBroadcast manages the entire logic for marshaling and distributing a message
+// to all other clients in the room.
+func (r *Room) handleBroadcast(message Message) {
+	// check for TypeError messages
+	if message.Type == TypeError {
+		r.logger.Warn().
+			Interface("message", message).
+			Msg("Received unhandled TypeError in broadcast channel.")
+		return
+	}
+
+	messageBytes, err := json.Marshal(message)
+	if err != nil {
+		r.logger.Error().
+			Str("message_id", message.ID).
+			Err(err).
+			Msg("Error marshaling message for broadcast.")
+		return
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	senderID := message.Sender.ID
+
+	for _, client := range r.clients {
+		// Skip sender
+		if client.user.ID != senderID {
+			select {
+			case client.send <- messageBytes:
+				// Message sent successfully
+			default:
+				// Client send channel full or closed, schedule unregister
+				r.logger.Warn().
+					Str("client_id", client.user.ID).
+					Msg("Client send channel full or closed, scheduling unregister.")
+
+				select {
+				case r.unregister <- client:
+				default:
+					r.logger.Warn().Msg("Unregister channel full, skipping client cleanup.")
+				}
+			}
 		}
 	}
 }
@@ -344,12 +374,21 @@ func (r *Room) RegisterClient(client *Client) {
 }
 
 // IsFull checks if the room has reached its maximum client capacity.
-func (r *Room) IsFull() bool {
+// If checkID is provided (non-empty string), it first checks if that ID is already in the room.
+// Existing clients are allowed to proceed (re-entry exemption) even if the room is technically full.
+func (r *Room) IsFull(checkID string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	currentClients := len(r.clients)
+	// Re-entry Exemption Check
+	if checkID != "" {
+		if _, exists := r.clients[checkID]; exists {
+			return false
+		}
+	}
 
+	// Standard Capacity Check
+	currentClients := len(r.clients)
 	return r.MaxClients > 0 && currentClients >= r.MaxClients
 }
 

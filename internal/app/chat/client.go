@@ -81,18 +81,7 @@ func NewClient(room *Room, wsConn *websocket.Conn, user user.User) *Client {
 // ReadPump handles reading messages from the WebSocket connection.
 // It handles heartbeats (Pong), message parsing, and performs cleanup upon connection closure.
 func (c *Client) ReadPump() {
-	defer func() {
-		c.logger.Info().Msg("Client connection cleanup starting")
-		select {
-		case c.room.unregister <- c:
-		default:
-			c.logger.Warn().Msg("Room unregister channel blocked. Connection cleanup still proceeding.")
-		}
-
-		if err := c.conn.Close(); err != nil {
-			c.logger.Error().Err(err).Msg("Client connection close error")
-		}
-	}()
+	defer c.cleanupOnDisconnect()
 
 	c.conn.SetReadLimit(maxMessageSize)
 
@@ -115,6 +104,23 @@ func (c *Client) ReadPump() {
 		}
 
 		c.processInboundMessage(messageBytes)
+	}
+}
+
+// cleanupOnDisconnect handles the necessary cleanup steps when the client's ReadPump terminates.
+func (c *Client) cleanupOnDisconnect() {
+	c.logger.Info().Msg("Client connection cleanup starting.")
+
+	// notify the room to unregister the client
+	select {
+	case c.room.unregister <- c:
+	default:
+		c.logger.Warn().Msg("Room unregister channel blocked. Connection cleanup still proceeding.")
+	}
+
+	// close the connection
+	if err := c.conn.Close(); err != nil {
+		c.logger.Error().Err(err).Msg("Client connection close error")
 	}
 }
 
@@ -178,6 +184,7 @@ func (c *Client) WritePump() {
 	defer func() {
 		ticker.Stop()
 
+		// ensure the connection is closed on exit
 		if err := c.conn.Close(); err != nil {
 			c.logger.Error().Err(err).Msg("Client connection close error in WritePump")
 		}
@@ -186,35 +193,55 @@ func (c *Client) WritePump() {
 	for {
 		select {
 		case message, ok := <-c.send:
-			if err := c.conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
-				c.logger.Error().Err(err).Msg("Failed to set write deadline")
-				return
-			}
-
-			if !ok {
-				if err := c.conn.WriteMessage(websocket.CloseMessage, []byte{}); err != nil {
-					c.logger.Error().Err(err).Msg("Error writing close message")
-				}
-				return
-			}
-
-			if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
-				c.logger.Error().Err(err).Msg("Error writing message")
+			if !c.writeQueuedMessage(message, ok) {
 				return
 			}
 
 		case <-ticker.C:
-			if err := c.conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
-				c.logger.Error().Err(err).Msg("Failed to set write deadline on ping")
-				return
-			}
-
-			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				c.logger.Error().Err(err).Msg("Error writing ping")
+			if !c.writePingMessage() {
 				return
 			}
 		}
 	}
+}
+
+// writeQueuedMessage handles messages pulled from the send channel, writing them to the WebSocket.
+// Returns true if the WritePump loop should continue, false if it should terminate.
+func (c *Client) writeQueuedMessage(message []byte, ok bool) bool {
+	if err := c.conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
+		c.logger.Error().Err(err).Msg("Failed to set write deadline")
+		return false
+	}
+
+	if !ok {
+		if err := c.conn.WriteMessage(websocket.CloseMessage, []byte{}); err != nil {
+			c.logger.Error().Err(err).Msg("Error writing close message")
+		}
+		return false
+	}
+
+	if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
+		c.logger.Error().Err(err).Msg("Error writing message")
+		return false
+	}
+
+	return true
+}
+
+// writePingMessage sends a periodic WebSocket Ping message to maintain the connection heartbeat.
+// Returns false if the WritePump loop should terminate due to write failure.
+func (c *Client) writePingMessage() bool {
+	if err := c.conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
+		c.logger.Error().Err(err).Msg("Failed to set write deadline on ping")
+		return false
+	}
+
+	if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+		c.logger.Error().Err(err).Msg("Error writing ping")
+		return false
+	}
+
+	return true
 }
 
 // sendMessage marshals the data and attempts to send it to the client's send channel.
