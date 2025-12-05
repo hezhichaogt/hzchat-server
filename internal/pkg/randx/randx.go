@@ -23,6 +23,12 @@ const (
 
 	// RoomCodeLength is the fixed length required for the generated room code.
 	RoomCodeLength = 6
+
+	// GuestIDPrefix is the required prefix for client-generated guest IDs.
+	GuestIDPrefix = "guest_"
+
+	// GuestIDRawLength is the fixed length of the Base62 part of the GuestID.
+	GuestIDRawLength = 6
 )
 
 // RoomCode generates a Base62 encoded room code using a cryptographically secure random number generator (crypto/rand).
@@ -57,6 +63,27 @@ func IsValidRoomCode(code string) bool {
 	}
 
 	for _, char := range code {
+		if !strings.ContainsRune(Base62Chars, char) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// IsValidGuestID checks if the given string is a valid Guest ID.
+func IsValidGuestID(id string) bool {
+	if !strings.HasPrefix(id, GuestIDPrefix) {
+		return false
+	}
+
+	rawID := id[len(GuestIDPrefix):]
+
+	if len(rawID) != GuestIDRawLength {
+		return false
+	}
+
+	for _, char := range rawID {
 		if !strings.ContainsRune(Base62Chars, char) {
 			return false
 		}
