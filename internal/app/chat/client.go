@@ -26,7 +26,7 @@ const (
 	writeWait = 10 * time.Second
 
 	// maximum time allowed for the server to wait for a Pong message from the client.
-	pongWait = 30 * time.Second
+	pongWait = 60 * time.Second
 
 	// frequency at which the server sends a Ping message.
 	pingPeriod = (pongWait * 9) / 10

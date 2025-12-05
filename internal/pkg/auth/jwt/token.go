@@ -8,9 +8,9 @@ import (
 )
 
 const (
-	// TokenExpiration sets the duration before the token expires (1 minute),
+	// TokenExpiration sets the duration before the token expires (15 minute),
 	// fitting the temporary nature of the chat room.
-	TokenExpiration = 1 * time.Minute
+	TokenExpiration = 15 * time.Minute
 
 	// TokenIssuer identifies the issuer of the token.
 	TokenIssuer = "HZChat-Server"
