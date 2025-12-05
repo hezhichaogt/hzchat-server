@@ -14,4 +14,5 @@ var SystemUser = user.User{
 	ID:       "system",
 	Nickname: "system",
 	Avatar:   "",
+	UserType: "system",
 }
