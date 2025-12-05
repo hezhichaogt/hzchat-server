@@ -25,6 +25,9 @@ type AppConfig struct {
 	// AllowedOrigins is the list of origins permitted for CORS and WebSocket connections.
 	AllowedOrigins []string
 
+	// JWTSecret is the secret key used for signing and verifying JWT tokens.
+	JWTSecret string
+
 	// PowDifficulty is the required difficulty level for the Proof-of-Work (PoW) algorithm.
 	// Note: This feature is currently reserved, and the server does not yet implement PoW validation logic.
 	PowDifficulty int
@@ -70,6 +73,19 @@ func LoadConfig() (*AppConfig, error) {
 	} else {
 		cfg.AllowedOrigins = []string{}
 	}
+
+	// JWTSecret
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if cfg.Environment == "development" {
+		if jwtSecret == "" {
+			jwtSecret = "your_default_insecure_secret_key_change_me"
+		}
+	} else {
+		if jwtSecret == "" {
+			return nil, fmt.Errorf("JWT_SECRET environment variable is required in %s environment for security", cfg.Environment)
+		}
+	}
+	cfg.JWTSecret = jwtSecret
 
 	// PowDifficulty
 	difficultyStr := os.Getenv("POW_DIFFICULTY")
