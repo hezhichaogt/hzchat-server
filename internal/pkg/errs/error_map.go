@@ -32,7 +32,9 @@ var errorMap = map[int]CustomError{
 	ErrPowChallengeInvalid:  {Code: ErrPowChallengeInvalid, Message: "Proof-of-Work proof is invalid or has expired.", Status: http.StatusForbidden},
 	ErrPowChallengeInternal: {Code: ErrPowChallengeInternal, Message: "Internal PoW service error. Please try again.", Status: http.StatusInternalServerError},
 	ErrSessionKicked:        {Code: ErrSessionKicked, Message: "Session replaced by new connection. Please check other tabs.", Status: http.StatusForbidden},
+	ErrUnauthorized:         {Code: ErrUnauthorized, Message: "Authentication failed. Missing or invalid token.", Status: http.StatusUnauthorized},
 
 	// 5xxx: Internal System Errors
-	ErrUnknown: {Code: ErrUnknown, Message: "An unexpected server error occurred.", Status: http.StatusInternalServerError},
+	ErrUnknown:           {Code: ErrUnknown, Message: "An unexpected server error occurred.", Status: http.StatusInternalServerError},
+	ErrFileStorageFailed: {Code: ErrFileStorageFailed, Message: "Internal file storage service failed. Please try again.", Status: http.StatusInternalServerError},
 }

@@ -61,10 +61,16 @@ const (
 
 	// ErrSessionKicked indicates that the current client connection has been terminated.
 	ErrSessionKicked = 3004
+
+	// ErrUnauthorized indicates that the request requires valid authentication (e.g., missing or invalid JWT).
+	ErrUnauthorized = 3005
 )
 
 // 5xxx: Internal System Errors
 const (
 	// ErrUnknown represents an unclassified, general server internal error.
 	ErrUnknown = 5000
+
+	// ErrFileStorageFailed indicates an internal server error related to file storage (e.g., S3/R2 API failure).
+	ErrFileStorageFailed = 5001
 )
