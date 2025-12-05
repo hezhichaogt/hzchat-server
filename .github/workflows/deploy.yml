@@ -45,12 +45,15 @@ jobs:
           username: ${{ secrets.VPS_USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 22
+          script_stop: true
           script: |
             echo "Switching to Docker Compose directory"
             cd ${{ env.VPS_COMPOSE_DIR }}
             
             echo "Pulling the latest Docker image"
             docker compose pull hzchat_server
+
+            export JWT_SECRET="${{ secrets.JWT_SECRET }}"
             
             echo "Restarting hzchat_server service to apply the new image"
             docker compose up -d --no-deps --force-recreate hzchat_server
