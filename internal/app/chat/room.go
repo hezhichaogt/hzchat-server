@@ -36,6 +36,7 @@ const (
 type Room struct {
 	Code       string
 	MaxClients int
+	JWTSecret  string
 
 	// Core state
 	clients map[string]*Client
@@ -56,7 +57,7 @@ type Room struct {
 }
 
 // NewRoom creates and initializes a new Room instance.
-func NewRoom(roomCode string, maxClients int, cleanupChan chan<- RoomCleanupMsg) *Room {
+func NewRoom(roomCode string, maxClients int, cleanupChan chan<- RoomCleanupMsg, jwtSecret string) *Room {
 	roomLogger := logx.Logger().With().
 		Str("room_code", roomCode).
 		Logger()
@@ -64,6 +65,7 @@ func NewRoom(roomCode string, maxClients int, cleanupChan chan<- RoomCleanupMsg)
 	return &Room{
 		Code:          roomCode,
 		MaxClients:    maxClients,
+		JWTSecret:     jwtSecret,
 		clients:       make(map[string]*Client),
 		broadcast:     make(chan Message, broadcastChannelBuffer),
 		register:      make(chan *Client),

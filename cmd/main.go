@@ -45,7 +45,7 @@ func main() {
 	defer stop()
 
 	// Initialize Chat Manager
-	manager := chat.NewManager()
+	manager := chat.NewManager(cfg)
 
 	// Setup HTTP server and routes
 	router := handler.Router(manager, cfg)

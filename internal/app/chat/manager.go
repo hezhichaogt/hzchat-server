@@ -11,6 +11,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"hzchat/internal/configs"
 	"hzchat/internal/pkg/errs"
 	"hzchat/internal/pkg/logx"
 )
@@ -19,6 +20,9 @@ import (
 type Manager struct {
 	// rooms stores a map of all Room instances, keyed by RoomCode.
 	rooms map[string]*Room
+
+	// Config holds the application's read-only configuration settings.
+	config *configs.AppConfig
 
 	// mu protects concurrent access to the rooms map.
 	mu sync.RWMutex
@@ -34,13 +38,14 @@ type Manager struct {
 }
 
 // NewManager constructs and returns a new Manager instance.
-func NewManager() *Manager {
+func NewManager(cfg *configs.AppConfig) *Manager {
 	managerLogger := logx.Logger().With().Str("component", "Manager").Logger()
 
 	m := &Manager{
 		rooms:   make(map[string]*Room),
 		cleanup: make(chan RoomCleanupMsg, 10),
 		logger:  managerLogger,
+		config:  cfg,
 	}
 
 	m.wg.Add(1)
@@ -85,7 +90,7 @@ func (m *Manager) CreateRoom(roomCode string, maxClients int) (*Room, *errs.Cust
 		return nil, errs.NewError(errs.ErrRoomCodeExists)
 	}
 
-	newRoom := NewRoom(roomCode, maxClients, m.cleanup)
+	newRoom := NewRoom(roomCode, maxClients, m.cleanup, m.config.JWTSecret)
 	m.rooms[roomCode] = newRoom
 
 	go newRoom.Run()

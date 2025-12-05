@@ -9,6 +9,7 @@ package handler
 import (
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
@@ -74,6 +75,16 @@ func HandleWebSocket(manager *chat.Manager, upgrader websocket.Upgrader, rateLim
 			return
 		}
 
+		// Check token expiration
+		var tokenExpiry time.Time
+		if payload.ExpiresAt > 0 {
+			tokenExpiry = time.Unix(payload.ExpiresAt, 0)
+		} else {
+			logx.Warn("JWT is missing a valid Expiration claim (Exp). Connection rejected.", "room_code", roomCode)
+			resp.RespondError(w, r, errs.NewError(errs.ErrInvalidParams))
+			return
+		}
+
 		userID := payload.ID
 		userType := payload.UserType
 		nickName := query.Get("nn")
@@ -112,7 +123,7 @@ func HandleWebSocket(manager *chat.Manager, upgrader websocket.Upgrader, rateLim
 		}
 
 		// Create a new chat client
-		client := chat.NewClient(room, conn, currentUser)
+		client := chat.NewClient(room, conn, currentUser, tokenExpiry)
 
 		// Start the client's write pump in a new goroutine
 		go client.WritePump()

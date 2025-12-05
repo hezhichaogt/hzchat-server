@@ -38,6 +38,9 @@ const (
 
 	// TypeError represents a server-sent error notification.
 	TypeError MessageType = "ERROR"
+
+	// TypeTokenUpdate represents a server-sent token update notification.
+	TypeTokenUpdate MessageType = "TOKEN_UPDATE"
 )
 
 // InitDataPayload is the payload structure for a TypeInitData message.
@@ -77,6 +80,11 @@ type ErrorPayload struct {
 // within the Chat Manager, notifying that a specific chat room needs to be cleaned up and removed.
 type RoomCleanupMsg struct {
 	RoomCode string
+}
+
+// TokenUpdatePayload is the payload structure for a TypeTokenUpdate message.
+type TokenUpdatePayload struct {
+	Token string `json:"token"`
 }
 
 // Message represents the standard message structure transmitted between the

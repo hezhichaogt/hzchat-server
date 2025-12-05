@@ -13,12 +13,12 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/rs/zerolog"
 
 	"hzchat/internal/app/user"
+	"hzchat/internal/pkg/auth/jwt"
 	"hzchat/internal/pkg/errs"
 	"hzchat/internal/pkg/logx"
-
-	"github.com/rs/zerolog"
 )
 
 const (
@@ -40,6 +40,9 @@ const (
 	// WsCloseCodeSessionKicked is a custom WebSocket Close Code (4000-4999 range)
 	// used to signal the client that the session was replaced by a new connection.
 	WsCloseCodeSessionKicked = 4001
+
+	// TokenRefreshWindow defines how much time before the token expires we should attempt to refresh it.
+	TokenRefreshWindow = 2 * time.Minute
 )
 
 // Client struct represents an active WebSocket connection and its associated user.
@@ -53,6 +56,9 @@ type Client struct {
 	// associated client user.
 	user user.User
 
+	// tokenExpiry records the expiration time of the current JWT used by the client.
+	tokenExpiry time.Time
+
 	// a buffered channel used to queue messages waiting to be sent to the client.
 	send chan []byte
 
@@ -61,18 +67,19 @@ type Client struct {
 }
 
 // NewClient constructs and returns a new Client instance.
-func NewClient(room *Room, wsConn *websocket.Conn, user user.User) *Client {
+func NewClient(room *Room, wsConn *websocket.Conn, user user.User, expiry time.Time) *Client {
 	clientLogger := logx.Logger().With().
 		Str("client_id", user.ID).
 		Str("room_code", room.Code).
 		Logger()
 
 	client := &Client{
-		room:   room,
-		conn:   wsConn,
-		user:   user,
-		send:   make(chan []byte, 256),
-		logger: clientLogger,
+		room:        room,
+		conn:        wsConn,
+		user:        user,
+		tokenExpiry: expiry,
+		send:        make(chan []byte, 256),
+		logger:      clientLogger,
 	}
 
 	return client
@@ -201,6 +208,8 @@ func (c *Client) WritePump() {
 			if !c.writePingMessage() {
 				return
 			}
+
+			c.checkAndRefreshToken()
 		}
 	}
 }
@@ -242,6 +251,69 @@ func (c *Client) writePingMessage() bool {
 	}
 
 	return true
+}
+
+// checkAndRefreshToken checks if the current JWT is close to expiry and generates a new one if necessary.
+func (c *Client) checkAndRefreshToken() {
+	if time.Now().After(c.tokenExpiry.Add(-TokenRefreshWindow)) {
+		c.logger.Info().
+			Time("current_expiry", c.tokenExpiry).
+			Dur("refresh_window", TokenRefreshWindow).
+			Msg("JWT token is nearing expiry, attempting refresh.")
+
+		// Recreate the Payload using current client/room data
+		payload := &jwt.Payload{
+			ID:       c.user.ID,
+			Code:     c.room.Code,
+			UserType: c.user.UserType,
+		}
+
+		secretKey := c.room.JWTSecret
+
+		// Generate the new token
+		tokenString, err := jwt.GenerateToken(payload, secretKey)
+		if err != nil {
+			c.logger.Error().Err(err).Msg("Failed to generate new token. Aborting refresh.")
+			return
+		}
+
+		// Calculate the new token expiry time
+		newExpiry := time.Now().Add(jwt.TokenExpiration)
+
+		// Update Client state and send the update message
+		if err := c.SendTokenUpdateMessage(tokenString); err != nil {
+			c.logger.Error().Err(err).Msg("Failed to send token update to client.")
+			return
+		}
+
+		// Update the client's internal expiry record
+		c.tokenExpiry = newExpiry
+	}
+}
+
+// SendTokenUpdateMessage constructs and sends a TypeTokenUpdate message to the client.
+func (c *Client) SendTokenUpdateMessage(newToken string) error {
+	updatePayload := TokenUpdatePayload{
+		Token: newToken,
+	}
+
+	updateMsg, err := NewMessage(
+		TypeTokenUpdate,
+		c.room.Code,
+		SystemUser,
+		updatePayload,
+	)
+
+	if err != nil {
+		c.logger.Error().Err(err).Msg("Failed to build TOKEN_UPDATE message.")
+		return err
+	}
+
+	if err := c.sendMessage(updateMsg); err != nil {
+		c.logger.Error().Err(err).Msg("Failed to send TOKEN_UPDATE message.")
+		return err
+	}
+	return nil
 }
 
 // sendMessage marshals the data and attempts to send it to the client's send channel.
