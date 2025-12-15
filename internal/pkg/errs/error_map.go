@@ -21,11 +21,14 @@ var errorMap = map[int]CustomError{
 	ErrRateLimitExceeded:     {Code: ErrRateLimitExceeded, Message: "Request rate limit exceeded. Please try again later.", Status: http.StatusTooManyRequests},
 
 	// 2xxx: Room and Content Business Logic Errors
-	ErrRoomTypeInvalid:       {Code: ErrRoomTypeInvalid, Message: "chat type is invalid, must be 'private' or 'group'", Status: http.StatusBadRequest},
-	ErrRoomCodeExists:        {Code: ErrRoomCodeExists, Message: "The generated chat code already exists.", Status: http.StatusConflict},
-	ErrRoomNotFound:          {Code: ErrRoomNotFound, Message: "The requested chat does not exist", Status: http.StatusNotFound},
-	ErrRoomIsFull:            {Code: ErrRoomIsFull, Message: "The chat has reached its maximum client capacity", Status: http.StatusForbidden},
-	ErrMessageContentTooLong: {Code: ErrMessageContentTooLong, Message: "The message content exceeds the maximum allowed length.", Status: http.StatusRequestEntityTooLarge},
+	ErrRoomTypeInvalid:        {Code: ErrRoomTypeInvalid, Message: "chat type is invalid, must be 'private' or 'group'", Status: http.StatusBadRequest},
+	ErrRoomCodeExists:         {Code: ErrRoomCodeExists, Message: "The generated chat code already exists.", Status: http.StatusConflict},
+	ErrRoomNotFound:           {Code: ErrRoomNotFound, Message: "The requested chat does not exist", Status: http.StatusNotFound},
+	ErrRoomIsFull:             {Code: ErrRoomIsFull, Message: "The chat has reached its maximum client capacity", Status: http.StatusForbidden},
+	ErrMessageContentTooLong:  {Code: ErrMessageContentTooLong, Message: "The message content exceeds the maximum allowed length.", Status: http.StatusRequestEntityTooLarge},
+	ErrFileSizeTooLarge:       {Code: ErrFileSizeTooLarge, Message: "The file size exceeds the maximum allowed limit for this chat.", Status: http.StatusRequestEntityTooLarge},
+	ErrAttachmentCountInvalid: {Code: ErrAttachmentCountInvalid, Message: "The number of attachments is outside the allowed range (1 to %d).", Status: http.StatusBadRequest},
+	ErrAttachmentKeyInvalid:   {Code: ErrAttachmentKeyInvalid, Message: "Attachment file key is invalid or does not belong to this room.", Status: http.StatusForbidden},
 
 	// 3xxx: User, Session, and Security Errors
 	ErrPowChallengeRequired: {Code: ErrPowChallengeRequired, Message: "Proof-of-Work challenge is required to proceed.", Status: http.StatusForbidden},

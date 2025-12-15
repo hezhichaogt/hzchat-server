@@ -16,6 +16,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"hzchat/internal/app/chat"
+	"hzchat/internal/app/storage"
 	"hzchat/internal/configs"
 	"hzchat/internal/pkg/auth/jwt"
 	"hzchat/internal/pkg/limiter"
@@ -40,7 +41,7 @@ const (
 // Router sets up the main HTTP routing table (chi.Router) for the application.
 // It initializes IP-based rate limiters, configures CORS, and applies global and per-route middleware.
 // It requires the chat.Manager for business logic and the AppConfig for settings (like allowed origins).
-func Router(manager *chat.Manager, cfg *configs.AppConfig) http.Handler {
+func Router(manager *chat.Manager, cfg *configs.AppConfig, storageService storage.StorageService) http.Handler {
 	// Initialize IP-based rate limiters for create and join endpoints
 	createLimiter := limiter.NewIPRateLimiter(rate.Limit(CreateRate), CreateBurst)
 	joinLimiter := limiter.NewIPRateLimiter(rate.Limit(JoinRate), JoinBurst)
@@ -115,6 +116,12 @@ func Router(manager *chat.Manager, cfg *configs.AppConfig) http.Handler {
 
 		// Join chat room
 		api.Post("/chat/join", HandleJoinRoom(manager, cfg))
+
+		// Request a pre-signed URL for temporary file upload
+		api.Post("/file/presign-upload", HandlePresignUploadURL(manager, storageService))
+
+		// Request a pre-signed URL for temporary file download
+		api.Get("/file/presign-download", HandlePresignDownloadURL(manager, storageService))
 	})
 
 	// WebSocket endpoint for chat

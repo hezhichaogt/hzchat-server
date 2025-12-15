@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"hzchat/internal/app/chat"
+	"hzchat/internal/app/storage"
 	"hzchat/internal/configs"
 	"hzchat/internal/handler"
 	"hzchat/internal/pkg/logx"
@@ -40,6 +41,19 @@ func main() {
 		Int("pow_difficulty", cfg.PowDifficulty).
 		Msg("Configuration loaded successfully")
 
+	// Initialize storage service
+	serviceConfig := storage.ServiceConfig{
+		S3BucketName:      cfg.S3BucketName,
+		S3Endpoint:        cfg.S3Endpoint,
+		S3AccessKeyID:     cfg.S3AccessKeyID,
+		S3SecretAccessKey: cfg.S3SecretAccessKey,
+	}
+	storageService, err := storage.NewStorageService(serviceConfig)
+	if err != nil {
+		logx.Fatal(err, "Failed to initialize storage service")
+	}
+	logx.Info("Storage service initialized successfully")
+
 	// Create a context that listens for the interrupt signal from the OS.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -48,7 +62,7 @@ func main() {
 	manager := chat.NewManager(cfg)
 
 	// Setup HTTP server and routes
-	router := handler.Router(manager, cfg)
+	router := handler.Router(manager, cfg, storageService)
 
 	serverAddr := fmt.Sprintf(":%d", cfg.Port)
 	server := &http.Server{

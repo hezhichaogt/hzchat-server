@@ -41,6 +41,9 @@ const (
 
 	// TypeTokenUpdate represents a server-sent token update notification.
 	TypeTokenUpdate MessageType = "TOKEN_UPDATE"
+
+	// TypeAttachments represents a message containing file attachments.
+	TypeAttachments MessageType = "ATTACHMENTS"
 )
 
 // InitDataPayload is the payload structure for a TypeInitData message.
@@ -85,6 +88,12 @@ type RoomCleanupMsg struct {
 // TokenUpdatePayload is the payload structure for a TypeTokenUpdate message.
 type TokenUpdatePayload struct {
 	Token string `json:"token"`
+}
+
+// AttachmentsPayload is the payload structure for a TypeAttachments message.
+type AttachmentsPayload struct {
+	Description string       `json:"description,omitempty"`
+	Attachments []Attachment `json:"attachments"`
 }
 
 // Message represents the standard message structure transmitted between the

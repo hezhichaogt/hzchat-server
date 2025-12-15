@@ -16,21 +16,20 @@ import (
 // AppConfig contains all configuration parameters required for the application to run.
 // All configuration values are loaded from environment variables.
 type AppConfig struct {
-	// Environment defines the application's operating environment (e.g., "development", "production").
-	Environment string
-
-	// Port is the port number on which the HTTP server will listen.
-	Port int
-
-	// AllowedOrigins is the list of origins permitted for CORS and WebSocket connections.
-	AllowedOrigins []string
-
-	// JWTSecret is the secret key used for signing and verifying JWT tokens.
-	JWTSecret string
-
-	// PowDifficulty is the required difficulty level for the Proof-of-Work (PoW) algorithm.
-	// Note: This feature is currently reserved, and the server does not yet implement PoW validation logic.
+	// General Server Settings
+	Environment   string
+	Port          int
 	PowDifficulty int
+
+	// Security Settings
+	AllowedOrigins []string
+	JWTSecret      string
+
+	// S3 Storage Settings
+	S3BucketName      string
+	S3Endpoint        string
+	S3AccessKeyID     string
+	S3SecretAccessKey string
 }
 
 // LoadConfig reads and parses the application configuration from environment variables.
@@ -39,6 +38,7 @@ type AppConfig struct {
 func LoadConfig() (*AppConfig, error) {
 	cfg := &AppConfig{}
 
+	// --- General Server Settings ---
 	// Environment
 	cfg.Environment = os.Getenv("ENVIRONMENT")
 	if cfg.Environment == "" {
@@ -60,6 +60,18 @@ func LoadConfig() (*AppConfig, error) {
 		return nil, fmt.Errorf("port number %d is outside the recommended range (%d-%d) to avoid privileged ports", cfg.Port, 1024, 65535)
 	}
 
+	// PowDifficulty
+	difficultyStr := os.Getenv("POW_DIFFICULTY")
+	if difficultyStr == "" {
+		difficultyStr = "4"
+	}
+	difficulty, err := strconv.Atoi(difficultyStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid POW_DIFFICULTY environment variable: %w", err)
+	}
+	cfg.PowDifficulty = difficulty
+
+	// --- Security Settings ---
 	// AllowedOrigins
 	originsStr := os.Getenv("ALLOWED_ORIGINS")
 	if originsStr != "" {
@@ -87,16 +99,30 @@ func LoadConfig() (*AppConfig, error) {
 	}
 	cfg.JWTSecret = jwtSecret
 
-	// PowDifficulty
-	difficultyStr := os.Getenv("POW_DIFFICULTY")
-	if difficultyStr == "" {
-		difficultyStr = "4"
+	// --- S3 Storage Settings ---
+	// S3 Bucket Name
+	cfg.S3BucketName = os.Getenv("S3_BUCKET_NAME")
+	if cfg.S3BucketName == "" {
+		return nil, fmt.Errorf("S3_BUCKET_NAME environment variable is required for S3 storage connection")
 	}
-	difficulty, err := strconv.Atoi(difficultyStr)
-	if err != nil {
-		return nil, fmt.Errorf("invalid POW_DIFFICULTY environment variable: %w", err)
+
+	// S3 Endpoint
+	cfg.S3Endpoint = os.Getenv("S3_ENDPOINT")
+	if cfg.S3Endpoint == "" {
+		return nil, fmt.Errorf("S3_ENDPOINT environment variable is required for S3 storage connection")
 	}
-	cfg.PowDifficulty = difficulty
+
+	// S3 Access Key ID
+	cfg.S3AccessKeyID = os.Getenv("S3_ACCESS_KEY_ID")
+	if cfg.S3AccessKeyID == "" {
+		return nil, fmt.Errorf("S3_ACCESS_KEY_ID environment variable is required for S3 authentication")
+	}
+
+	// S3 Secret Access Key
+	cfg.S3SecretAccessKey = os.Getenv("S3_SECRET_ACCESS_KEY")
+	if cfg.S3SecretAccessKey == "" {
+		return nil, fmt.Errorf("S3_SECRET_ACCESS_KEY environment variable is required for S3 authentication")
+	}
 
 	return cfg, nil
 }

@@ -46,6 +46,15 @@ const (
 
 	// ErrMessageContentTooLong indicates that the user's message content exceeded the maximum length limit.
 	ErrMessageContentTooLong = 2201
+
+	// ErrFileSizeTooLarge indicates that the requested file size exceeded the application's business logic limit.
+	ErrFileSizeTooLarge = 2202
+
+	// ErrAttachmentCountInvalid indicates that the number of attachments in a message is either zero or exceeds the allowed maximum.
+	ErrAttachmentCountInvalid = 2203
+
+	// ErrAttachmentKeyInvalid indicates that an attachment key does not belong to the expected room or user.
+	ErrAttachmentKeyInvalid = 2204
 )
 
 // 3xxx: User, Session, and Security Errors

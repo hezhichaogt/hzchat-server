@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -36,6 +37,9 @@ const (
 
 	// maximum allowed size (in bytes) for text message content.
 	MaxContentBytes = 5000
+
+	// MaxAttachmentsCount defines the maximum number of attachments allowed per message.
+	MaxAttachmentsCount = 3
 
 	// WsCloseCodeSessionKicked is a custom WebSocket Close Code (4000-4999 range)
 	// used to signal the client that the session was replaced by a new connection.
@@ -146,41 +150,84 @@ func (c *Client) processInboundMessage(messageBytes []byte) {
 		return
 	}
 
-	if inboundMsg.Type != TypeText {
-		c.logger.Warn().Str("msg_type", string(inboundMsg.Type)).Msg("Client sent unsupported message type")
-		return
-	}
+	switch inboundMsg.Type {
+	case TypeText:
+		c.handleText(inboundMsg.Payload, inboundMsg.TempID)
 
+	case TypeAttachments:
+		c.handleAttachments(inboundMsg.Payload, inboundMsg.TempID)
+
+	default:
+		c.logger.Warn().Str("msg_type", string(inboundMsg.Type)).Msg("Client sent unsupported message type")
+	}
+}
+
+// handleText processes incoming text messages from the client.
+func (c *Client) handleText(payloadBytes json.RawMessage, tempID string) {
 	var textPayload TextPayload
-	if err := json.Unmarshal(inboundMsg.Payload, &textPayload); err != nil {
+	if err := json.Unmarshal(payloadBytes, &textPayload); err != nil {
 		c.logger.Warn().Err(err).Msg("Client sent invalid TEXT payload")
 		return
 	}
 
 	if len(textPayload.Content) > MaxContentBytes {
-		c.logger.Warn().
-			Int("content_length", len(textPayload.Content)).
-			Int("limit", MaxContentBytes).
-			Msg("Client sent message content exceeding max byte limit. Rejecting.")
-
 		c.SendError(errs.NewError(errs.ErrMessageContentTooLong))
 		return
 	}
 
-	broadcastMsg, err := NewMessage(
-		TypeText,
-		c.room.Code,
-		c.user,
-		textPayload,
-	)
-
+	broadcastMsg, err := NewMessage(TypeText, c.room.Code, c.user, textPayload)
 	if err != nil {
-		c.logger.Error().Err(err).Msg("Failed to create new message for broadcast")
+		c.logger.Error().Err(err).Msg("Failed to create new text message for broadcast")
 		return
 	}
 
-	c.sendConfirmation(inboundMsg.TempID, broadcastMsg)
+	c.sendConfirmation(tempID, broadcastMsg)
+	c.room.broadcast <- broadcastMsg
+}
 
+// handleAttachments processes incoming attachment messages from the client.
+func (c *Client) handleAttachments(payloadBytes json.RawMessage, tempID string) {
+	var attachmentsPayload AttachmentsPayload
+	if err := json.Unmarshal(payloadBytes, &attachmentsPayload); err != nil {
+		c.logger.Warn().Err(err).Msg("Client sent invalid ATTACHMENTS payload")
+		return
+	}
+
+	if count := len(attachmentsPayload.Attachments); count == 0 || count > MaxAttachmentsCount {
+		c.SendError(errs.NewError(errs.ErrAttachmentCountInvalid, MaxAttachmentsCount))
+		return
+	}
+
+	if len(attachmentsPayload.Description) > MaxContentBytes {
+		c.SendError(errs.NewError(errs.ErrMessageContentTooLong))
+		return
+	}
+
+	expectedKeyPrefix := fmt.Sprintf("%s/", c.room.Code)
+
+	for i := range attachmentsPayload.Attachments {
+		a := &attachmentsPayload.Attachments[i]
+
+		if !strings.HasPrefix(a.Key, expectedKeyPrefix) {
+			c.SendError(errs.NewError(errs.ErrAttachmentKeyInvalid))
+			return
+		}
+
+		if err := ValidateFileType(a.Name, a.MimeType); err != nil {
+			c.SendError(err)
+			return
+		}
+
+		a.Meta = nil
+	}
+
+	broadcastMsg, err := NewMessage(TypeAttachments, c.room.Code, c.user, attachmentsPayload)
+	if err != nil {
+		c.logger.Error().Err(err).Msg("Failed to create new attachments message for broadcast")
+		return
+	}
+
+	c.sendConfirmation(tempID, broadcastMsg)
 	c.room.broadcast <- broadcastMsg
 }
 
