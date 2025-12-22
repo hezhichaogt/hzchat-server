@@ -7,33 +7,33 @@ import (
 	"strings"
 
 	"hzchat/internal/app/chat"
-	"hzchat/internal/app/storage"
 	"hzchat/internal/pkg/auth/jwt"
 	"hzchat/internal/pkg/errs"
+	"hzchat/internal/pkg/randx"
 	"hzchat/internal/pkg/req"
 	"hzchat/internal/pkg/resp"
 
 	"github.com/google/uuid"
 )
 
-// PresignUploadInput defines the JSON input structure for generating upload URL.
 type PresignUploadInput struct {
-	FileName string `json:"file_name"`
-	MimeType string `json:"mime_type"`
-	FileSize int64  `json:"file_size"`
+	FileName string `json:"fileName"`
+	MimeType string `json:"mimeType"`
+	FileSize int64  `json:"fileSize"`
 }
 
 // HandlePresignUploadURL creates an HTTP HandlerFunc to generate a time-limited,
 // pre-signed URL for file upload, scoped to a specific room.
-func HandlePresignUploadURL(manager *chat.Manager, storageService storage.StorageService) http.HandlerFunc {
+func HandlePresignUploadURL(deps *AppDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		payload := jwt.GetPayloadFromContext(r)
-		if payload == nil {
+		identity := jwt.GetPayloadFromContext(r)
+
+		if identity == nil || !randx.IsValidRoomCode(identity.Code) {
 			resp.RespondError(w, r, errs.NewError(errs.ErrUnauthorized))
 			return
 		}
 
-		room := manager.GetRoom(payload.Code)
+		room := deps.Manager.GetRoom(identity.Code)
 		if room == nil {
 			resp.RespondError(w, r, errs.NewError(errs.ErrRoomNotFound))
 			return
@@ -57,9 +57,9 @@ func HandlePresignUploadURL(manager *chat.Manager, storageService storage.Storag
 
 		fileExt := strings.ToLower(filepath.Ext(input.FileName))
 		fileID := uuid.New().String()
-		fileKey := fmt.Sprintf("%s/%s%s", payload.Code, fileID, fileExt)
+		fileKey := fmt.Sprintf("%s/%s%s", identity.Code, fileID, fileExt)
 
-		url, err := storageService.PresignUpload(
+		url, err := deps.StorageService.PresignUpload(
 			r.Context(),
 			fileKey,
 			input.MimeType,
@@ -72,21 +72,21 @@ func HandlePresignUploadURL(manager *chat.Manager, storageService storage.Storag
 			return
 		}
 
-		data := map[string]any{
+		resp.RespondSuccess(w, r, map[string]any{
 			"presignedUrl": url,
 			"fileKey":      fileKey,
 			"fileName":     input.FileName,
-		}
-		resp.RespondSuccess(w, r, data)
+		})
 	}
 }
 
 // HandlePresignDownloadURL creates an HTTP HandlerFunc to generate a time-limited,
 // pre-signed URL for file download, scoped to a specific room.
-func HandlePresignDownloadURL(manager *chat.Manager, storageService storage.StorageService) http.HandlerFunc {
+func HandlePresignDownloadURL(deps *AppDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		payload := jwt.GetPayloadFromContext(r)
-		if payload == nil {
+		identity := jwt.GetPayloadFromContext(r)
+
+		if identity == nil || !randx.IsValidRoomCode(identity.Code) {
 			resp.RespondError(w, r, errs.NewError(errs.ErrUnauthorized))
 			return
 		}
@@ -97,19 +97,20 @@ func HandlePresignDownloadURL(manager *chat.Manager, storageService storage.Stor
 			return
 		}
 
-		room := manager.GetRoom(payload.Code)
+		room := deps.Manager.GetRoom(identity.Code)
 		if room == nil {
 			resp.RespondError(w, r, errs.NewError(errs.ErrRoomNotFound))
 			return
 		}
 
-		expectedKeyPrefix := fmt.Sprintf("%s/", payload.Code)
+		expectedKeyPrefix := fmt.Sprintf("%s/", identity.Code)
+
 		if !strings.HasPrefix(fileKey, expectedKeyPrefix) {
 			resp.RespondError(w, r, errs.NewError(errs.ErrUnauthorized))
 			return
 		}
 
-		url, err := storageService.PresignDownload(
+		url, err := deps.StorageService.PresignDownload(
 			r.Context(),
 			fileKey,
 			chat.PresignedURLDuration,

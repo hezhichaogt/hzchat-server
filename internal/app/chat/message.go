@@ -106,7 +106,7 @@ type Message struct {
 	Type MessageType `json:"type"`
 
 	// RoomCode is the code of the chat room this message belongs to or is sent to.
-	RoomCode string `json:"room_code"`
+	RoomCode string `json:"roomCode"`
 
 	// Sender is the identity information of the user who sent the message.
 	Sender user.User `json:"sender"`
@@ -119,7 +119,7 @@ type Message struct {
 
 	// TempID is the temporary ID carried by the client's message, returned unchanged
 	// by the server upon message confirmation (ACK).
-	TempID string `json:"tempID,omitempty"`
+	TempID string `json:"tempId,omitempty"`
 }
 
 // NewMessage constructs and returns a new Message instance.

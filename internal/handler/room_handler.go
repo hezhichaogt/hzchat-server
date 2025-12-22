@@ -7,30 +7,29 @@ import (
 	"net/http"
 
 	"hzchat/internal/app/chat"
-	"hzchat/internal/configs"
 	"hzchat/internal/pkg/auth/jwt"
 	"hzchat/internal/pkg/errs"
 	"hzchat/internal/pkg/logx"
 	"hzchat/internal/pkg/randx"
 	"hzchat/internal/pkg/req"
 	"hzchat/internal/pkg/resp"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// CreateRoomInput defines the JSON input structure received by the room creation API endpoint.
 type CreateRoomInput struct {
 	// Type defines the type of room, e.g., "private" or "group".
 	Type string `json:"type"`
 	// MaxClients defines the maximum number of clients for the room (optional; can be omitted if the type determines the client count).
-	MaxClients int `json:"max_clients,omitempty"`
+	MaxClients int `json:"maxClients,omitempty"`
 }
 
 // HandleCreateRoom creates an HTTP HandlerFunc to process room creation requests.
-func HandleCreateRoom(manager *chat.Manager) http.HandlerFunc {
+func HandleCreateRoom(deps *AppDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var input CreateRoomInput
 
 		if customErr := req.BindJSON(r, &input); customErr != nil {
-			logx.Warn("Failed to bind JSON for room creation", "error", customErr)
 			resp.RespondError(w, r, customErr)
 			return
 		}
@@ -45,29 +44,21 @@ func HandleCreateRoom(manager *chat.Manager) http.HandlerFunc {
 		}
 
 		if maxClients == 0 {
-			customErr := errs.NewError(errs.ErrRoomTypeInvalid)
-			logx.Warn("Invalid room type received", "type", input.Type)
-			resp.RespondError(w, r, customErr)
+			resp.RespondError(w, r, errs.NewError(errs.ErrRoomTypeInvalid))
 			return
 		}
 
-		logx.Info("Attempting to create new room", "room_type", input.Type, "max_clients", maxClients)
-
 		roomCode, err := randx.RoomCode()
 		if err != nil {
-			logx.Error(err, "Failed to generate room code")
 			resp.RespondError(w, r, errs.NewError(errs.ErrUnknown))
 			return
 		}
 
-		room, createErr := manager.CreateRoom(roomCode, maxClients)
+		room, createErr := deps.Manager.CreateRoom(roomCode, maxClients)
 		if createErr != nil {
-			logx.Warn("Failed to create room in manager", "room_code", roomCode, "error", createErr)
 			resp.RespondError(w, r, createErr)
 			return
 		}
-
-		logx.Info("Room created successfully", "room_code", room.Code)
 
 		data := map[string]any{
 			"chatCode": room.Code,
@@ -76,69 +67,101 @@ func HandleCreateRoom(manager *chat.Manager) http.HandlerFunc {
 	}
 }
 
-// JoinRoomInput defines the JSON input structure received by the room join API endpoint.
 type JoinRoomInput struct {
-	// Code is the code of the chat room to join.
-	Code string `json:"code" validate:"required"`
-
-	// GuestID is the unique identifier for a guest.
-	GuestID string `json:"guestID"`
+	Code     string `json:"code" validate:"required"`
+	GuestID  string `json:"guestId,omitempty"`
+	Nickname string `json:"nickname,omitempty"`
 }
 
 // HandleJoinRoom processes the request to join a room.
-func HandleJoinRoom(manager *chat.Manager, cfg *configs.AppConfig) http.HandlerFunc {
+func HandleJoinRoom(deps *AppDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		identity := jwt.GetPayloadFromContext(r)
+
 		var input JoinRoomInput
 		if customErr := req.BindJSON(r, &input); customErr != nil {
-			logx.Warn("Failed to bind JSON for room join", "error", customErr)
 			resp.RespondError(w, r, customErr)
 			return
 		}
 
-		code := input.Code
-		guestID := input.GuestID
+		var finalID string
+		var userType string
+		var nickName string
+		var avatar string
 
-		if !randx.IsValidGuestID(guestID) {
-			logx.Warn("Invalid GuestID format or length", "guest_id", guestID, "room_code", code)
+		if identity != nil {
+			var userUUID pgtype.UUID
+
+			if err := userUUID.Scan(identity.ID); err != nil {
+				logx.Error(err, "Invalid UUID format in identity token", "id", identity.ID)
+				resp.RespondError(w, r, errs.NewError(errs.ErrInvalidParams))
+				return
+			}
+
+			dbUser, err := deps.DB.GetUserByID(r.Context(), userUUID)
+
+			if err != nil {
+				logx.Error(err, "Failed to fetch user by UUID", "id", identity.ID)
+				resp.RespondError(w, r, errs.NewError(errs.ErrUnauthorized))
+				return
+			}
+
+			finalID = identity.ID
+			userType = "registered"
+			nickName = dbUser.Nickname.String
+			avatar = dbUser.AvatarUrl.String
+
+		} else {
+			if !randx.IsValidGuestID(input.GuestID) {
+				logx.Warn("Invalid GuestID format in join request", "guest_id", input.GuestID)
+				resp.RespondError(w, r, errs.NewError(errs.ErrInvalidParams))
+				return
+			}
+
+			if input.Nickname == "" {
+				logx.Warn("Guest nickname missing", "guest_id", input.GuestID)
+				resp.RespondError(w, r, errs.NewError(errs.ErrInvalidParams))
+				return
+			}
+
+			finalID = input.GuestID
+			userType = "guest"
+			nickName = input.Nickname
+		}
+
+		if !randx.IsValidRoomCode(input.Code) {
 			resp.RespondError(w, r, errs.NewError(errs.ErrInvalidParams))
 			return
 		}
 
-		if !randx.IsValidRoomCode(code) {
-			resp.RespondError(w, r, errs.NewError(errs.ErrInvalidParams))
-			return
-		}
+		room := deps.Manager.GetRoom(input.Code)
 
-		room := manager.GetRoom(code)
 		if room == nil {
-			logx.Info("Room not found", "room_code", code)
 			resp.RespondError(w, r, errs.NewError(errs.ErrRoomNotFound))
 			return
 		}
 
-		if room.IsFull(guestID) {
-			logx.Info("Room is full for new joiner", "room_code", code)
+		if room.IsFull(finalID) {
 			resp.RespondError(w, r, errs.NewError(errs.ErrRoomIsFull))
 			return
 		}
 
-		// Generate token
 		payload := &jwt.Payload{
-			ID:       guestID,
-			Code:     code,
-			UserType: "guest",
+			ID:       finalID,
+			Code:     input.Code,
+			UserType: userType,
+			Nickname: nickName,
+			Avatar:   avatar,
 		}
 
-		tokenString, err := jwt.GenerateToken(payload, cfg.JWTSecret)
+		tokenString, err := jwt.GenerateToken(payload, deps.Config.JWTSecret, jwt.RoomAccessExpiration)
 		if err != nil {
-			logx.Warn("Failed to generate JWT token", "error", err)
 			resp.RespondError(w, r, errs.NewError(errs.ErrUnknown))
 			return
 		}
 
-		data := map[string]any{
+		resp.RespondSuccess(w, r, map[string]any{
 			"token": tokenString,
-		}
-		resp.RespondSuccess(w, r, data)
+		})
 	}
 }

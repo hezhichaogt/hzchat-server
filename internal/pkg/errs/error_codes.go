@@ -73,6 +73,21 @@ const (
 
 	// ErrUnauthorized indicates that the request requires valid authentication (e.g., missing or invalid JWT).
 	ErrUnauthorized = 3005
+
+	// ErrAlreadyLoggedIn indicates the user is already authenticated.
+	ErrAlreadyLoggedIn = 3006
+
+	// ErrInvalidUsername indicates the username does not meet requirements (4-20 chars, a-z0-9_).
+	ErrInvalidUsername = 3007
+
+	// ErrInvalidPassword indicates the password length is out of range (6-50 chars).
+	ErrInvalidPassword = 3008
+
+	// ErrUserAlreadyExists indicates the username has already been taken.
+	ErrUserAlreadyExists = 3009
+
+	// ErrInvalidCredentials indicates wrong username or password during login.
+	ErrInvalidCredentials = 3010
 )
 
 // 5xxx: Internal System Errors

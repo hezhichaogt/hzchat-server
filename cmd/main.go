@@ -18,10 +18,13 @@ import (
 	"time"
 
 	"hzchat/internal/app/chat"
+	"hzchat/internal/app/db"
 	"hzchat/internal/app/storage"
 	"hzchat/internal/configs"
 	"hzchat/internal/handler"
 	"hzchat/internal/pkg/logx"
+
+	dbc "hzchat/internal/app/db/sqlc"
 )
 
 func main() {
@@ -54,6 +57,14 @@ func main() {
 	}
 	logx.Info("Storage service initialized successfully")
 
+	// Initialize database
+	dbPool, err := db.NewPool(cfg.DatabaseDSN)
+	if err != nil {
+		logx.Fatal(err, "Failed to initialize database pool")
+	}
+	defer dbPool.Close()
+	logx.Info("Database initialized and migrations applied successfully")
+
 	// Create a context that listens for the interrupt signal from the OS.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -62,7 +73,13 @@ func main() {
 	manager := chat.NewManager(cfg)
 
 	// Setup HTTP server and routes
-	router := handler.Router(manager, cfg, storageService)
+	deps := &handler.AppDeps{
+		Manager:        manager,
+		Config:         cfg,
+		StorageService: storageService,
+		DB:             dbc.New(dbPool),
+	}
+	router := handler.Router(deps)
 
 	serverAddr := fmt.Sprintf(":%d", cfg.Port)
 	server := &http.Server{

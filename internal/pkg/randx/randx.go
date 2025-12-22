@@ -91,3 +91,19 @@ func IsValidGuestID(id string) bool {
 
 	return true
 }
+
+// UserNickname generates a random nickname with a "User_" prefix and 6 random Base62 characters.
+func UserNickname() (string, error) {
+	const nicknameRandomLength = 6
+	result := make([]byte, nicknameRandomLength)
+
+	for i := range nicknameRandomLength {
+		num, err := rand.Int(rand.Reader, big.NewInt(Base62Len))
+		if err != nil {
+			return "", fmt.Errorf("failed to generate random number for nickname: %v", err)
+		}
+		result[i] = Base62Chars[num.Int64()]
+	}
+
+	return "User_" + string(result), nil
+}

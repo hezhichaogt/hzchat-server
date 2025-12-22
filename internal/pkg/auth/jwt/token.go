@@ -8,20 +8,22 @@ import (
 )
 
 const (
-	// TokenExpiration sets the duration before the token expires (15 minute),
-	// fitting the temporary nature of the chat room.
-	TokenExpiration = 15 * time.Minute
+	// RoomAccessExpiration defines the duration for room-specific access tokens (short-term).
+	RoomAccessExpiration = 15 * time.Minute
+
+	// UserIdentityExpiration defines the duration for general user identity tokens (long-term).
+	UserIdentityExpiration = 24 * time.Hour
 
 	// TokenIssuer identifies the issuer of the token.
 	TokenIssuer = "HZChat-Server"
 )
 
 // GenerateToken creates and signs a new JWT Token string based on the provided Payload struct.
-func GenerateToken(payload *Payload, secretKey string) (string, error) {
+func GenerateToken(payload *Payload, secretKey string, duration time.Duration) (string, error) {
 	now := time.Now()
 
 	payload.StandardClaims = jwt.StandardClaims{
-		ExpiresAt: now.Add(TokenExpiration).Unix(),
+		ExpiresAt: now.Add(duration).Unix(),
 		IssuedAt:  now.Unix(),
 		Issuer:    TokenIssuer,
 	}

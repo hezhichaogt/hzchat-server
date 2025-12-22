@@ -318,14 +318,14 @@ func (c *Client) checkAndRefreshToken() {
 		secretKey := c.room.JWTSecret
 
 		// Generate the new token
-		tokenString, err := jwt.GenerateToken(payload, secretKey)
+		tokenString, err := jwt.GenerateToken(payload, secretKey, jwt.RoomAccessExpiration)
 		if err != nil {
 			c.logger.Error().Err(err).Msg("Failed to generate new token. Aborting refresh.")
 			return
 		}
 
 		// Calculate the new token expiry time
-		newExpiry := time.Now().Add(jwt.TokenExpiration)
+		newExpiry := time.Now().Add(jwt.RoomAccessExpiration)
 
 		// Update Client state and send the update message
 		if err := c.SendTokenUpdateMessage(tokenString); err != nil {
@@ -445,7 +445,7 @@ func (c *Client) sendConfirmation(originalTempID string, authoritativeMsg Messag
 	}
 
 	ackPayload := struct {
-		OriginalTempID string `json:"tempID"`
+		OriginalTempID string `json:"tempId"`
 		MessageID      string `json:"id"`
 		Timestamp      int64  `json:"timestamp"`
 	}{

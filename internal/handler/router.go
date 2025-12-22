@@ -15,9 +15,6 @@ import (
 	"github.com/rs/cors"
 	"golang.org/x/time/rate"
 
-	"hzchat/internal/app/chat"
-	"hzchat/internal/app/storage"
-	"hzchat/internal/configs"
 	"hzchat/internal/pkg/auth/jwt"
 	"hzchat/internal/pkg/limiter"
 	"hzchat/internal/pkg/logx"
@@ -41,7 +38,7 @@ const (
 // Router sets up the main HTTP routing table (chi.Router) for the application.
 // It initializes IP-based rate limiters, configures CORS, and applies global and per-route middleware.
 // It requires the chat.Manager for business logic and the AppConfig for settings (like allowed origins).
-func Router(manager *chat.Manager, cfg *configs.AppConfig, storageService storage.StorageService) http.Handler {
+func Router(deps *AppDeps) http.Handler {
 	// Initialize IP-based rate limiters for create and join endpoints
 	createLimiter := limiter.NewIPRateLimiter(rate.Limit(CreateRate), CreateBurst)
 	joinLimiter := limiter.NewIPRateLimiter(rate.Limit(JoinRate), JoinBurst)
@@ -50,7 +47,7 @@ func Router(manager *chat.Manager, cfg *configs.AppConfig, storageService storag
 
 	// Configure WebSocket upgrader with origin checking based on allowed origins
 	allowedOrigins := make(map[string]struct{})
-	for _, origin := range cfg.AllowedOrigins {
+	for _, origin := range deps.Config.AllowedOrigins {
 		allowedOrigins[origin] = struct{}{}
 	}
 
@@ -58,7 +55,7 @@ func Router(manager *chat.Manager, cfg *configs.AppConfig, storageService storag
 		ReadBufferSize:  4096,
 		WriteBufferSize: 4096,
 		CheckOrigin: func(r *http.Request) bool {
-			if cfg.Environment == "development" {
+			if deps.Config.Environment == "development" {
 				return true
 			}
 
@@ -73,10 +70,10 @@ func Router(manager *chat.Manager, cfg *configs.AppConfig, storageService storag
 	}
 
 	corsAllowedOrigins := []string{}
-	if cfg.Environment == "development" {
+	if deps.Config.Environment == "development" {
 		corsAllowedOrigins = []string{"*"}
-	} else if len(cfg.AllowedOrigins) > 0 {
-		corsAllowedOrigins = cfg.AllowedOrigins
+	} else if len(deps.Config.AllowedOrigins) > 0 {
+		corsAllowedOrigins = deps.Config.AllowedOrigins
 	}
 
 	// Apply CORS middleware
@@ -108,24 +105,24 @@ func Router(manager *chat.Manager, cfg *configs.AppConfig, storageService storag
 
 	r.Route("/api", func(api chi.Router) {
 		// Middleware to extract identity from JWT for all /api routes
-		api.Use(jwt.IdentityExtractorMiddleware(cfg.JWTSecret))
+		api.Use(jwt.IdentityExtractorMiddleware(deps.Config.JWTSecret))
 
-		// Create chat room
-		rateLimitedCreateHandler := createLimiter.Middleware(HandleCreateRoom(manager))
+		// Auth
+		api.Post("/auth/register", HandleRegister(deps))
+		api.Post("/auth/login", HandleLogin(deps))
+
+		// Chat
+		rateLimitedCreateHandler := createLimiter.Middleware(HandleCreateRoom(deps))
 		api.Post("/chat/create", http.HandlerFunc(rateLimitedCreateHandler.ServeHTTP))
+		api.Post("/chat/join", HandleJoinRoom(deps))
 
-		// Join chat room
-		api.Post("/chat/join", HandleJoinRoom(manager, cfg))
-
-		// Request a pre-signed URL for temporary file upload
-		api.Post("/file/presign-upload", HandlePresignUploadURL(manager, storageService))
-
-		// Request a pre-signed URL for temporary file download
-		api.Get("/file/presign-download", HandlePresignDownloadURL(manager, storageService))
+		// File
+		api.Post("/file/presign-upload", HandlePresignUploadURL(deps))
+		api.Get("/file/presign-download", HandlePresignDownloadURL(deps))
 	})
 
-	// WebSocket endpoint for chat
-	r.Get("/ws/{code}", HandleWebSocket(manager, wsUpgrader, joinLimiter, cfg))
+	// WebSocket
+	r.Get("/ws/{code}", HandleWebSocket(wsUpgrader, joinLimiter, deps))
 
 	return r
 }

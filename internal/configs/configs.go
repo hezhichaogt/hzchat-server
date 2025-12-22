@@ -30,6 +30,9 @@ type AppConfig struct {
 	S3Endpoint        string
 	S3AccessKeyID     string
 	S3SecretAccessKey string
+
+	// Database Settings
+	DatabaseDSN string
 }
 
 // LoadConfig reads and parses the application configuration from environment variables.
@@ -122,6 +125,16 @@ func LoadConfig() (*AppConfig, error) {
 	cfg.S3SecretAccessKey = os.Getenv("S3_SECRET_ACCESS_KEY")
 	if cfg.S3SecretAccessKey == "" {
 		return nil, fmt.Errorf("S3_SECRET_ACCESS_KEY environment variable is required for S3 authentication")
+	}
+
+	// --- Database Settings ---
+	cfg.DatabaseDSN = os.Getenv("DATABASE_URL")
+	if cfg.DatabaseDSN == "" {
+		if cfg.Environment == "development" {
+			cfg.DatabaseDSN = "postgres://postgres:123456@localhost:5432/hzchat?sslmode=disable"
+		} else {
+			return nil, fmt.Errorf("DATABASE_URL environment variable is required in %s environment", cfg.Environment)
+		}
 	}
 
 	return cfg, nil

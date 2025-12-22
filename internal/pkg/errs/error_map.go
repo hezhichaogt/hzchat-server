@@ -36,6 +36,11 @@ var errorMap = map[int]CustomError{
 	ErrPowChallengeInternal: {Code: ErrPowChallengeInternal, Message: "Internal PoW service error. Please try again.", Status: http.StatusInternalServerError},
 	ErrSessionKicked:        {Code: ErrSessionKicked, Message: "Session replaced by new connection. Please check other tabs.", Status: http.StatusForbidden},
 	ErrUnauthorized:         {Code: ErrUnauthorized, Message: "Authentication failed. Missing or invalid token.", Status: http.StatusUnauthorized},
+	ErrAlreadyLoggedIn:      {Code: ErrAlreadyLoggedIn, Message: "Already logged in.", Status: http.StatusConflict},
+	ErrInvalidUsername:      {Code: ErrInvalidUsername, Message: "Username: 4-20 alphanumeric characters.", Status: http.StatusBadRequest},
+	ErrInvalidPassword:      {Code: ErrInvalidPassword, Message: "Password must be 6-50 characters.", Status: http.StatusBadRequest},
+	ErrUserAlreadyExists:    {Code: ErrUserAlreadyExists, Message: "Username is already taken.", Status: http.StatusConflict},
+	ErrInvalidCredentials:   {Code: ErrInvalidCredentials, Message: "Invalid username or password.", Status: http.StatusUnauthorized},
 
 	// 5xxx: Internal System Errors
 	ErrUnknown:           {Code: ErrUnknown, Message: "An unexpected server error occurred.", Status: http.StatusInternalServerError},

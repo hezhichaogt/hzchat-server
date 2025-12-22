@@ -14,11 +14,15 @@ type Payload struct {
 	// Guest ID or a registered User ID, depending on the UserType.
 	ID string `json:"id"`
 
-	// Code specifies the chat room the token holder is currently authorized to access.
-	// This is vital for security and context-specific authorization within REST API calls.
-	Code string `json:"code"`
+	// Code optionally specifies the chat room the token holder is authorized to access.
+	// When present, it elevates the token from a general identity credential to a
+	// room-specific access token. It is omitted in long-term identity tokens.
+	Code string `json:"code,omitempty"`
 
 	// UserType defines the role of the participant, allowing the server to apply
 	// different logic and permissions (e.g., "guest", "registered", or "subscriber").
-	UserType string `json:"user_type"`
+	UserType string `json:"userType"`
+
+	Nickname string `json:"nickname,omitempty"`
+	Avatar   string `json:"avatar,omitempty"`
 }
