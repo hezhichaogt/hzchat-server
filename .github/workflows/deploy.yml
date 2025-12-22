@@ -58,6 +58,7 @@ jobs:
             export S3_ENDPOINT="${{ secrets.S3_ENDPOINT }}"
             export S3_ACCESS_KEY_ID="${{ secrets.S3_ACCESS_KEY_ID }}"
             export S3_SECRET_ACCESS_KEY="${{ secrets.S3_SECRET_ACCESS_KEY }}"
+            export DATABASE_URL="${{ secrets.DATABASE_URL }}"
             
             echo "Restarting hzchat_server service to apply the new image"
             docker compose up -d --no-deps --force-recreate hzchat_server
