@@ -26,10 +26,12 @@ type AppConfig struct {
 	JWTSecret      string
 
 	// S3 Storage Settings
-	S3BucketName      string
-	S3Endpoint        string
-	S3AccessKeyID     string
-	S3SecretAccessKey string
+	S3Endpoint          string
+	S3AccessKeyID       string
+	S3SecretAccessKey   string
+	S3PublicBucketName  string
+	S3PrivateBucketName string
+	S3PublicBaseURL     string
 
 	// Database Settings
 	DatabaseDSN string
@@ -103,12 +105,6 @@ func LoadConfig() (*AppConfig, error) {
 	cfg.JWTSecret = jwtSecret
 
 	// --- S3 Storage Settings ---
-	// S3 Bucket Name
-	cfg.S3BucketName = os.Getenv("S3_BUCKET_NAME")
-	if cfg.S3BucketName == "" {
-		return nil, fmt.Errorf("S3_BUCKET_NAME environment variable is required for S3 storage connection")
-	}
-
 	// S3 Endpoint
 	cfg.S3Endpoint = os.Getenv("S3_ENDPOINT")
 	if cfg.S3Endpoint == "" {
@@ -125,6 +121,24 @@ func LoadConfig() (*AppConfig, error) {
 	cfg.S3SecretAccessKey = os.Getenv("S3_SECRET_ACCESS_KEY")
 	if cfg.S3SecretAccessKey == "" {
 		return nil, fmt.Errorf("S3_SECRET_ACCESS_KEY environment variable is required for S3 authentication")
+	}
+
+	// S3 Public Bucket
+	cfg.S3PublicBucketName = os.Getenv("S3_PUBLIC_BUCKET_NAME")
+	if cfg.S3PublicBucketName == "" {
+		return nil, fmt.Errorf("S3_PUBLIC_BUCKET_NAME environment variable is required")
+	}
+
+	// S3 Private Bucket
+	cfg.S3PrivateBucketName = os.Getenv("S3_PRIVATE_BUCKET_NAME")
+	if cfg.S3PrivateBucketName == "" {
+		return nil, fmt.Errorf("S3_PRIVATE_BUCKET_NAME environment variable is required")
+	}
+
+	// S3 Public Base URL
+	cfg.S3PublicBaseURL = os.Getenv("S3_PUBLIC_BASE_URL")
+	if cfg.S3PublicBaseURL == "" {
+		return nil, fmt.Errorf("S3_PUBLIC_BASE_URL environment variable is required")
 	}
 
 	// --- Database Settings ---

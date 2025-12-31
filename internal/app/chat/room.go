@@ -77,17 +77,6 @@ func NewRoom(roomCode string, maxClients int, cleanupChan chan<- RoomCleanupMsg,
 	}
 }
 
-// Stop sends a signal to immediately terminate the Room's Run loop.
-func (r *Room) Stop() {
-	r.logger.Info().Msg("Received stop signal. Stopping room immediately.")
-
-	select {
-	case <-r.stopChan:
-	default:
-		close(r.stopChan)
-	}
-}
-
 // Run starts the main event loop for the Room.
 // It handles client registration, deregistration, message broadcasting, and room shutdown.
 func (r *Room) Run() {
@@ -117,57 +106,14 @@ func (r *Room) Run() {
 	}
 }
 
-// cleanupOnExit performs necessary cleanup actions when the Room's Run loop exits.
-func (r *Room) cleanupOnExit() {
-	r.logger.Info().Msg("Room Run loop finished. Notifying Manager for cleanup.")
+// Stop sends a signal to immediately terminate the Room's Run loop.
+func (r *Room) Stop() {
+	r.logger.Info().Msg("Received stop signal. Stopping room immediately.")
 
-	// stop the shutdown timer if it's still running
-	if r.shutdownTimer != nil {
-		r.shutdownTimer.Stop()
-	}
-
-	// notify Manager for cleanup
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				logx.Warn("Recovered from panic during Manager cleanup notification (channel likely closed).")
-			}
-		}()
-
-		select {
-		case r.cleanupChan <- RoomCleanupMsg{RoomCode: r.Code}:
-			r.logger.Info().Msg("Sent cleanup notification to Manager.")
-		default:
-			r.logger.Warn().Msg("Manager cleanup channel blocked/full. Skipping cleanup notification.")
-		}
-	}()
-
-	// 3. Close all client send channels
-	r.mu.Lock()
-	for _, client := range r.clients {
-		select {
-		case <-client.send:
-		default:
-			close(client.send)
-		}
-	}
-	r.mu.Unlock()
-
-	// 4. Safely close Room's own input channels
 	select {
-	case <-r.broadcast:
+	case <-r.stopChan:
 	default:
-		close(r.broadcast)
-	}
-	select {
-	case <-r.register:
-	default:
-		close(r.register)
-	}
-	select {
-	case <-r.unregister:
-	default:
-		close(r.unregister)
+		close(r.stopChan)
 	}
 }
 
@@ -202,11 +148,13 @@ func (r *Room) handleRegister(client *Client) {
 			Msg("Room is full. New unique client rejected.")
 
 		client.SendError(fmt.Errorf("room is full"))
+
 		select {
 		case <-client.send:
 		default:
 			close(client.send)
 		}
+
 		r.mu.Unlock()
 		return
 	}
@@ -362,6 +310,60 @@ func (r *Room) handleBroadcast(message Message) {
 				}
 			}
 		}
+	}
+}
+
+// cleanupOnExit performs necessary cleanup actions when the Room's Run loop exits.
+func (r *Room) cleanupOnExit() {
+	r.logger.Info().Msg("Room Run loop finished. Notifying Manager for cleanup.")
+
+	// stop the shutdown timer if it's still running
+	if r.shutdownTimer != nil {
+		r.shutdownTimer.Stop()
+	}
+
+	// notify Manager for cleanup
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logx.Warn("Recovered from panic during Manager cleanup notification (channel likely closed).")
+			}
+		}()
+
+		select {
+		case r.cleanupChan <- RoomCleanupMsg{RoomCode: r.Code}:
+			r.logger.Info().Msg("Sent cleanup notification to Manager.")
+		default:
+			r.logger.Warn().Msg("Manager cleanup channel blocked/full. Skipping cleanup notification.")
+		}
+	}()
+
+	// 3. Close all client send channels
+	r.mu.Lock()
+	for _, client := range r.clients {
+		select {
+		case <-client.send:
+		default:
+			close(client.send)
+		}
+	}
+	r.mu.Unlock()
+
+	// 4. Safely close Room's own input channels
+	select {
+	case <-r.broadcast:
+	default:
+		close(r.broadcast)
+	}
+	select {
+	case <-r.register:
+	default:
+		close(r.register)
+	}
+	select {
+	case <-r.unregister:
+	default:
+		close(r.unregister)
 	}
 }
 

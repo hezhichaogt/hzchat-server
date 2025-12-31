@@ -2,12 +2,7 @@ package jwt
 
 import "github.com/golang-jwt/jwt"
 
-// Payload defines the structure of the JSON Web Token (JWT) claims for HZ Chat.
-// It includes standard claims required by the JWT specification and custom claims
-// necessary for identifying and authorizing users within the chat system.
 type Payload struct {
-	// StandardClaims embeds the necessary JWT standard fields such as Exp (Expiration),
-	// Iat (Issued At), and Iss (Issuer). These are crucial for token validity checks.
 	jwt.StandardClaims `json:"standard_claims"`
 
 	// ID is the unified identifier for the participant, which can be a system-generated

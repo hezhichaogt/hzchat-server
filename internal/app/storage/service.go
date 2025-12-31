@@ -7,10 +7,10 @@ import (
 
 // ServiceConfig holds the configuration required to connect to the storage service.
 type ServiceConfig struct {
-	S3BucketName      string
-	S3Endpoint        string
-	S3AccessKeyID     string
-	S3SecretAccessKey string
+	BucketName      string
+	Endpoint        string
+	AccessKeyID     string
+	SecretAccessKey string
 }
 
 // StorageService defines the public interface for the file storage service.
@@ -37,6 +37,5 @@ type StorageService interface {
 // NewStorageService is the factory function for StorageService.
 // It initializes and returns a concrete implementation based on the provided configuration.
 func NewStorageService(cfg ServiceConfig) (StorageService, error) {
-	// Currently, only S3 compatible implementations are supported.
 	return newS3Client(cfg)
 }

@@ -51,23 +51,12 @@ const (
 
 // Client struct represents an active WebSocket connection and its associated user.
 type Client struct {
-	// the chat room the client currently belongs to.
-	room *Room
-
-	// underlying WebSocket connection object.
-	conn *websocket.Conn
-
-	// associated client user.
-	user user.User
-
-	// tokenExpiry records the expiration time of the current JWT used by the client.
-	tokenExpiry time.Time
-
-	// a buffered channel used to queue messages waiting to be sent to the client.
-	send chan []byte
-
-	// structured logger with client and room context.
-	logger zerolog.Logger
+	room        *Room           // the chat room the client currently belongs to.
+	conn        *websocket.Conn // underlying WebSocket connection object.
+	user        user.User       // associated client user.
+	tokenExpiry time.Time       // tokenExpiry records the expiration time of the current JWT used by the client.
+	send        chan []byte     // a buffered channel used to queue messages waiting to be sent to the client.
+	logger      zerolog.Logger  // structured logger with client and room context.
 }
 
 // NewClient constructs and returns a new Client instance.
@@ -77,7 +66,7 @@ func NewClient(room *Room, wsConn *websocket.Conn, user user.User, expiry time.T
 		Str("room_code", room.Code).
 		Logger()
 
-	client := &Client{
+	return &Client{
 		room:        room,
 		conn:        wsConn,
 		user:        user,
@@ -85,8 +74,6 @@ func NewClient(room *Room, wsConn *websocket.Conn, user user.User, expiry time.T
 		send:        make(chan []byte, 256),
 		logger:      clientLogger,
 	}
-
-	return client
 }
 
 // ReadPump handles reading messages from the WebSocket connection.
@@ -118,20 +105,33 @@ func (c *Client) ReadPump() {
 	}
 }
 
-// cleanupOnDisconnect handles the necessary cleanup steps when the client's ReadPump terminates.
-func (c *Client) cleanupOnDisconnect() {
-	c.logger.Info().Msg("Client connection cleanup starting.")
+// WritePump handles writing messages from the Client.send channel to the WebSocket connection.
+func (c *Client) WritePump() {
+	ticker := time.NewTicker(pingPeriod)
 
-	// notify the room to unregister the client
-	select {
-	case c.room.unregister <- c:
-	default:
-		c.logger.Warn().Msg("Room unregister channel blocked. Connection cleanup still proceeding.")
-	}
+	defer func() {
+		ticker.Stop()
 
-	// close the connection
-	if err := c.conn.Close(); err != nil {
-		c.logger.Error().Err(err).Msg("Client connection close error")
+		// ensure the connection is closed on exit
+		if err := c.conn.Close(); err != nil {
+			c.logger.Error().Err(err).Msg("Client connection close error in WritePump")
+		}
+	}()
+
+	for {
+		select {
+		case message, ok := <-c.send:
+			if !c.writeQueuedMessage(message, ok) {
+				return
+			}
+
+		case <-ticker.C:
+			if !c.writePingMessage() {
+				return
+			}
+
+			c.checkAndRefreshToken()
+		}
 	}
 }
 
@@ -194,7 +194,7 @@ func (c *Client) handleAttachments(payloadBytes json.RawMessage, tempID string) 
 	}
 
 	if count := len(attachmentsPayload.Attachments); count == 0 || count > MaxAttachmentsCount {
-		c.SendError(errs.NewError(errs.ErrAttachmentCountInvalid, MaxAttachmentsCount))
+		c.SendError(errs.NewError(errs.ErrAttachmentCountInvalid))
 		return
 	}
 
@@ -229,36 +229,6 @@ func (c *Client) handleAttachments(payloadBytes json.RawMessage, tempID string) 
 
 	c.sendConfirmation(tempID, broadcastMsg)
 	c.room.broadcast <- broadcastMsg
-}
-
-// WritePump handles writing messages from the Client.send channel to the WebSocket connection.
-func (c *Client) WritePump() {
-	ticker := time.NewTicker(pingPeriod)
-
-	defer func() {
-		ticker.Stop()
-
-		// ensure the connection is closed on exit
-		if err := c.conn.Close(); err != nil {
-			c.logger.Error().Err(err).Msg("Client connection close error in WritePump")
-		}
-	}()
-
-	for {
-		select {
-		case message, ok := <-c.send:
-			if !c.writeQueuedMessage(message, ok) {
-				return
-			}
-
-		case <-ticker.C:
-			if !c.writePingMessage() {
-				return
-			}
-
-			c.checkAndRefreshToken()
-		}
-	}
 }
 
 // writeQueuedMessage handles messages pulled from the send channel, writing them to the WebSocket.
@@ -313,6 +283,8 @@ func (c *Client) checkAndRefreshToken() {
 			ID:       c.user.ID,
 			Code:     c.room.Code,
 			UserType: c.user.UserType,
+			Nickname: c.user.Nickname,
+			Avatar:   c.user.Avatar,
 		}
 
 		secretKey := c.room.JWTSecret
@@ -494,5 +466,22 @@ func (c *Client) Kick(reason string) {
 	case <-c.send:
 	default:
 		close(c.send)
+	}
+}
+
+// cleanupOnDisconnect handles the necessary cleanup steps when the client's ReadPump terminates.
+func (c *Client) cleanupOnDisconnect() {
+	c.logger.Info().Msg("Client connection cleanup starting.")
+
+	// notify the room to unregister the client
+	select {
+	case c.room.unregister <- c:
+	default:
+		c.logger.Warn().Msg("Room unregister channel blocked. Connection cleanup still proceeding.")
+	}
+
+	// close the connection
+	if err := c.conn.Close(); err != nil {
+		c.logger.Error().Err(err).Msg("Client connection close error")
 	}
 }

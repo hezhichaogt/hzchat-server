@@ -1,6 +1,3 @@
-/*
-Package handler provides HTTP handler functions for managing room creation and status checks.
-*/
 package handler
 
 import (
@@ -18,13 +15,10 @@ import (
 )
 
 type CreateRoomInput struct {
-	// Type defines the type of room, e.g., "private" or "group".
-	Type string `json:"type"`
-	// MaxClients defines the maximum number of clients for the room (optional; can be omitted if the type determines the client count).
-	MaxClients int `json:"maxClients,omitempty"`
+	Type       string `json:"type"`
+	MaxClients int    `json:"maxClients,omitempty"`
 }
 
-// HandleCreateRoom creates an HTTP HandlerFunc to process room creation requests.
 func HandleCreateRoom(deps *AppDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var input CreateRoomInput
@@ -73,10 +67,14 @@ type JoinRoomInput struct {
 	Nickname string `json:"nickname,omitempty"`
 }
 
-// HandleJoinRoom processes the request to join a room.
 func HandleJoinRoom(deps *AppDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		identity := jwt.GetPayloadFromContext(r)
+
+		if r.Header.Get("Authorization") != "" && identity == nil {
+			resp.RespondError(w, r, errs.NewError(errs.ErrUnauthorized))
+			return
+		}
 
 		var input JoinRoomInput
 		if customErr := req.BindJSON(r, &input); customErr != nil {
@@ -109,7 +107,7 @@ func HandleJoinRoom(deps *AppDeps) http.HandlerFunc {
 			finalID = identity.ID
 			userType = "registered"
 			nickName = dbUser.Nickname.String
-			avatar = dbUser.AvatarUrl.String
+			avatar = deps.FullAssetURL(dbUser.AvatarUrl.String)
 
 		} else {
 			if !randx.IsValidGuestID(input.GuestID) {

@@ -7,6 +7,7 @@ package db
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -54,7 +55,9 @@ SELECT
     id, 
     nickname, 
     avatar_url, 
-    plan_type
+    plan_type,
+    last_login_at,
+    password_hash
 FROM users
 WHERE id = $1 
   AND deleted_at IS NULL 
@@ -62,10 +65,12 @@ LIMIT 1
 `
 
 type GetUserByIDRow struct {
-	ID        pgtype.UUID `json:"id"`
-	Nickname  pgtype.Text `json:"nickname"`
-	AvatarUrl pgtype.Text `json:"avatar_url"`
-	PlanType  string      `json:"plan_type"`
+	ID           pgtype.UUID        `json:"id"`
+	Nickname     pgtype.Text        `json:"nickname"`
+	AvatarUrl    pgtype.Text        `json:"avatar_url"`
+	PlanType     string             `json:"plan_type"`
+	LastLoginAt  pgtype.Timestamptz `json:"last_login_at"`
+	PasswordHash string             `json:"password_hash"`
 }
 
 // Retrieves a user's display profile and service plan by their UUID.
@@ -77,6 +82,8 @@ func (q *Queries) GetUserByID(ctx context.Context, id pgtype.UUID) (GetUserByIDR
 		&i.Nickname,
 		&i.AvatarUrl,
 		&i.PlanType,
+		&i.LastLoginAt,
+		&i.PasswordHash,
 	)
 	return i, err
 }
@@ -131,4 +138,60 @@ WHERE id = $1
 func (q *Queries) UpdateLastLogin(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, updateLastLogin, id)
 	return err
+}
+
+const updateUserPassword = `-- name: UpdateUserPassword :exec
+UPDATE users 
+SET 
+  password_hash = $2,
+  updated_at = NOW()
+WHERE id = $1 
+  AND deleted_at IS NULL
+`
+
+type UpdateUserPasswordParams struct {
+	ID           pgtype.UUID `json:"id"`
+	PasswordHash string      `json:"password_hash"`
+}
+
+func (q *Queries) UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) error {
+	_, err := q.db.Exec(ctx, updateUserPassword, arg.ID, arg.PasswordHash)
+	return err
+}
+
+const updateUserProfile = `-- name: UpdateUserProfile :one
+UPDATE users 
+SET 
+  nickname = $2,
+  avatar_url = $3,
+  updated_at = NOW()
+WHERE id = $1 
+  AND deleted_at IS NULL
+RETURNING id, nickname, avatar_url, updated_at
+`
+
+type UpdateUserProfileParams struct {
+	ID        pgtype.UUID `json:"id"`
+	Nickname  pgtype.Text `json:"nickname"`
+	AvatarUrl pgtype.Text `json:"avatar_url"`
+}
+
+type UpdateUserProfileRow struct {
+	ID        pgtype.UUID `json:"id"`
+	Nickname  pgtype.Text `json:"nickname"`
+	AvatarUrl pgtype.Text `json:"avatar_url"`
+	UpdatedAt time.Time   `json:"updated_at"`
+}
+
+// Updates the user's nickname and avatar, and refreshes updated_at.
+func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) (UpdateUserProfileRow, error) {
+	row := q.db.QueryRow(ctx, updateUserProfile, arg.ID, arg.Nickname, arg.AvatarUrl)
+	var i UpdateUserProfileRow
+	err := row.Scan(
+		&i.ID,
+		&i.Nickname,
+		&i.AvatarUrl,
+		&i.UpdatedAt,
+	)
+	return i, err
 }

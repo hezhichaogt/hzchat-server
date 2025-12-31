@@ -20,6 +20,9 @@ type Querier interface {
 	GetUserByUsername(ctx context.Context, username string) (GetUserByUsernameRow, error)
 	// Updates the last login timestamp for a specific user.
 	UpdateLastLogin(ctx context.Context, id pgtype.UUID) error
+	UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) error
+	// Updates the user's nickname and avatar, and refreshes updated_at.
+	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) (UpdateUserProfileRow, error)
 }
 
 var _ Querier = (*Queries)(nil)

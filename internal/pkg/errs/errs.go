@@ -8,6 +8,7 @@ package errs
 
 import (
 	"fmt"
+	"net/http"
 	"strings"
 
 	"hzchat/internal/pkg/logx"
@@ -54,6 +55,10 @@ func NewError(code int, details ...any) *CustomError {
 	}
 
 	customErr := templateErr
+
+	if customErr.Status == 0 {
+		customErr.Status = http.StatusOK
+	}
 
 	if code == ErrUnknown && len(details) > 0 {
 		if originalErr, ok := details[0].(error); ok {

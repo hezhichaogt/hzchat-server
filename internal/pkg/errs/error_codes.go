@@ -88,6 +88,12 @@ const (
 
 	// ErrInvalidCredentials indicates wrong username or password during login.
 	ErrInvalidCredentials = 3010
+
+	// ErrUserNotFound indicates that the requested user account does not exist.
+	ErrUserNotFound = 3011
+
+	// ErrOldPasswordInvalid indicates that the current password provided for verification is incorrect.
+	ErrOldPasswordInvalid = 3012
 )
 
 // 5xxx: Internal System Errors

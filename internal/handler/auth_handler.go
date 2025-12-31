@@ -4,8 +4,10 @@ Package handler provides HTTP handler functions for user authentication and mana
 package handler
 
 import (
+	"context"
 	"net/http"
 	"regexp"
+	"time"
 	"unicode/utf8"
 
 	"hzchat/internal/app/db"
@@ -87,6 +89,10 @@ func HandleRegister(deps *AppDeps) http.HandlerFunc {
 			return
 		}
 
+		if err := deps.DB.UpdateLastLogin(r.Context(), user.ID); err != nil {
+			logx.Error(err, "register: failed to update last_login_at", "user_id", user.ID)
+		}
+
 		payload := &jwt.Payload{
 			ID:       user.ID.String(),
 			UserType: "registered",
@@ -102,11 +108,13 @@ func HandleRegister(deps *AppDeps) http.HandlerFunc {
 
 		resp.RespondSuccess(w, r, map[string]any{
 			"token": tokenString,
-			"user": map[string]string{
-				"id":       user.ID.String(),
-				"nickname": user.Nickname.String,
-				"avatar":   "",
-				"userType": "registered",
+			"user": map[string]any{
+				"id":          user.ID.String(),
+				"nickname":    user.Nickname.String,
+				"avatar":      "",
+				"userType":    "registered",
+				"planType":    "FREE",
+				"lastLoginAt": time.Now().Format(time.RFC3339),
 			},
 		})
 	}
@@ -148,11 +156,13 @@ func HandleLogin(deps *AppDeps) http.HandlerFunc {
 			logx.Error(err, "login: failed to update last_login_at", "user_id", dbUser.ID)
 		}
 
+		avatarURL := deps.FullAssetURL(dbUser.AvatarUrl.String)
+
 		payload := &jwt.Payload{
 			ID:       dbUser.ID.String(),
 			UserType: "registered",
 			Nickname: dbUser.Nickname.String,
-			Avatar:   dbUser.AvatarUrl.String,
+			Avatar:   avatarURL,
 		}
 
 		token, err := jwt.GenerateToken(payload, deps.Config.JWTSecret, jwt.UserIdentityExpiration)
@@ -166,11 +176,132 @@ func HandleLogin(deps *AppDeps) http.HandlerFunc {
 		resp.RespondSuccess(w, r, map[string]any{
 			"token": token,
 			"user": map[string]any{
-				"id":       dbUser.ID.String(),
-				"nickname": dbUser.Nickname.String,
-				"avatar":   dbUser.AvatarUrl.String,
-				"userType": "registered",
+				"id":          dbUser.ID.String(),
+				"nickname":    dbUser.Nickname.String,
+				"avatar":      avatarURL,
+				"userType":    "registered",
+				"planType":    dbUser.PlanType,
+				"lastLoginAt": time.Now().Format(time.RFC3339),
 			},
+		})
+	}
+}
+
+// HandleGetUserProfile retrieves the current authenticated user's profile and
+// updates the last_login_at timestamp if the threshold is met.
+func HandleGetUserProfile(deps *AppDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		identity := jwt.GetPayloadFromContext(r)
+		if identity == nil {
+			resp.RespondError(w, r, errs.NewError(errs.ErrUnauthorized))
+			return
+		}
+
+		var userUUID pgtype.UUID
+		if err := userUUID.Scan(identity.ID); err != nil {
+			resp.RespondError(w, r, errs.NewError(errs.ErrUnauthorized))
+			return
+		}
+
+		dbUser, err := deps.DB.GetUserByID(r.Context(), userUUID)
+		if err != nil {
+			logx.Warn("get_user_profile: user not found", "id", identity.ID)
+			resp.RespondError(w, r, errs.NewError(errs.ErrUnauthorized))
+			return
+		}
+
+		var lastLoginResponse any = nil
+		if dbUser.LastLoginAt.Valid {
+			lastLoginResponse = dbUser.LastLoginAt.Time.Format(time.RFC3339)
+		}
+
+		shouldUpdate := !dbUser.LastLoginAt.Valid || time.Since(dbUser.LastLoginAt.Time) > 30*time.Minute
+
+		if shouldUpdate {
+			go func(id pgtype.UUID) {
+				if err := deps.DB.UpdateLastLogin(context.Background(), id); err != nil {
+					logx.Error(err, "get_user_profile: failed to update last_login_at", "user_id", id)
+				}
+			}(dbUser.ID)
+		}
+
+		resp.RespondSuccess(w, r, map[string]any{
+			"user": map[string]any{
+				"id":          dbUser.ID.String(),
+				"nickname":    dbUser.Nickname.String,
+				"avatar":      deps.FullAssetURL(dbUser.AvatarUrl.String),
+				"userType":    "registered",
+				"planType":    dbUser.PlanType,
+				"lastLoginAt": lastLoginResponse,
+			},
+		})
+	}
+}
+
+type ChangePasswordInput struct {
+	OldPassword string `json:"oldPassword"`
+	NewPassword string `json:"newPassword"`
+}
+
+func HandleChangePassword(deps *AppDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		identity := jwt.GetPayloadFromContext(r)
+		if identity == nil || identity.UserType != "registered" {
+			resp.RespondError(w, r, errs.NewError(errs.ErrUnauthorized))
+			return
+		}
+
+		var input ChangePasswordInput
+		if customErr := req.BindJSON(r, &input); customErr != nil {
+			resp.RespondError(w, r, customErr)
+			return
+		}
+
+		passwordLen := utf8.RuneCountInString(input.NewPassword)
+		if passwordLen < 6 || passwordLen > 50 {
+			resp.RespondError(w, r, errs.NewError(errs.ErrInvalidPassword))
+			return
+		}
+
+		var userUUID pgtype.UUID
+		_ = userUUID.Scan(identity.ID)
+		user, err := deps.DB.GetUserByID(r.Context(), userUUID)
+		if err != nil {
+			resp.RespondError(w, r, errs.NewError(errs.ErrUserNotFound))
+			return
+		}
+
+		err = bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(input.OldPassword))
+		if err != nil {
+			resp.RespondError(w, r, errs.NewError(errs.ErrOldPasswordInvalid))
+			return
+		}
+
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(input.NewPassword), bcrypt.DefaultCost)
+		if err != nil {
+			resp.RespondError(w, r, errs.NewError(errs.ErrUnknown))
+			return
+		}
+
+		err = deps.DB.UpdateUserPassword(r.Context(), dbc.UpdateUserPasswordParams{
+			ID:           userUUID,
+			PasswordHash: string(hashedPassword),
+		})
+		if err != nil {
+			logx.Error(err, "failed to update user password in database", "user_id", identity.ID)
+			resp.RespondError(w, r, errs.NewError(errs.ErrUnknown))
+			return
+		}
+
+		newToken, err := jwt.GenerateToken(identity, deps.Config.JWTSecret, jwt.UserIdentityExpiration)
+		if err != nil {
+			logx.Error(err, "failed to generate token after password change", "user_id", identity.ID)
+			resp.RespondError(w, r, errs.NewError(errs.ErrUnknown))
+			return
+		}
+
+		resp.RespondSuccess(w, r, map[string]any{
+			"token": newToken,
 		})
 	}
 }

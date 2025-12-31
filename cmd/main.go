@@ -45,17 +45,28 @@ func main() {
 		Msg("Configuration loaded successfully")
 
 	// Initialize storage service
-	serviceConfig := storage.ServiceConfig{
-		S3BucketName:      cfg.S3BucketName,
-		S3Endpoint:        cfg.S3Endpoint,
-		S3AccessKeyID:     cfg.S3AccessKeyID,
-		S3SecretAccessKey: cfg.S3SecretAccessKey,
+	pubStorageConfig := storage.ServiceConfig{
+		BucketName:      cfg.S3PublicBucketName,
+		Endpoint:        cfg.S3Endpoint,
+		AccessKeyID:     cfg.S3AccessKeyID,
+		SecretAccessKey: cfg.S3SecretAccessKey,
 	}
-	storageService, err := storage.NewStorageService(serviceConfig)
+	publicStorage, err := storage.NewStorageService(pubStorageConfig)
 	if err != nil {
-		logx.Fatal(err, "Failed to initialize storage service")
+		logx.Fatal(err, "Failed to initialize public storage service")
 	}
-	logx.Info("Storage service initialized successfully")
+
+	privStorageConfig := storage.ServiceConfig{
+		BucketName:      cfg.S3PrivateBucketName,
+		Endpoint:        cfg.S3Endpoint,
+		AccessKeyID:     cfg.S3AccessKeyID,
+		SecretAccessKey: cfg.S3SecretAccessKey,
+	}
+	privateStorage, err := storage.NewStorageService(privStorageConfig)
+	if err != nil {
+		logx.Fatal(err, "Failed to initialize private storage service")
+	}
+	logx.Info("Storage services initialized successfully")
 
 	// Initialize database
 	dbPool, err := db.NewPool(cfg.DatabaseDSN)
@@ -76,7 +87,8 @@ func main() {
 	deps := &handler.AppDeps{
 		Manager:        manager,
 		Config:         cfg,
-		StorageService: storageService,
+		PublicStorage:  publicStorage,
+		PrivateStorage: privateStorage,
 		DB:             dbc.New(dbPool),
 	}
 	router := handler.Router(deps)

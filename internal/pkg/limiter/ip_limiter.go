@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"hzchat/internal/pkg/errs"
-	"hzchat/internal/pkg/logx"
 	"hzchat/internal/pkg/resp"
 
 	"golang.org/x/time/rate"
@@ -88,7 +87,6 @@ func (i *IPRateLimiter) cleanUpVisitors() {
 			}
 		}
 		i.mu.Unlock()
-		logx.Info("Rate limiter cleanup removed %d inactive IPs. %d active IPs remaining.", count, len(i.limits))
 	}
 }
 

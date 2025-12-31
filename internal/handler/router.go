@@ -22,30 +22,21 @@ import (
 )
 
 const (
-	// CreateRate defines the maximum requests per second allowed for room creation endpoints.
-	CreateRate = 0.05 // Equivalent to 1 request every 20 seconds
-
-	// CreateBurst is the maximum number of requests allowed in a burst for room creation.
+	CreateRate  = 0.05
 	CreateBurst = 2
-
-	// JoinRate defines the maximum requests per second allowed for joining rooms/WebSocket connections.
-	JoinRate = 0.2 // Equivalent to 1 request every 5 seconds
-
-	// JoinBurst is the maximum number of requests allowed in a burst for joining rooms/WebSocket connections.
-	JoinBurst = 5
+	JoinRate    = 0.2
+	JoinBurst   = 5
 )
 
 // Router sets up the main HTTP routing table (chi.Router) for the application.
 // It initializes IP-based rate limiters, configures CORS, and applies global and per-route middleware.
 // It requires the chat.Manager for business logic and the AppConfig for settings (like allowed origins).
 func Router(deps *AppDeps) http.Handler {
-	// Initialize IP-based rate limiters for create and join endpoints
 	createLimiter := limiter.NewIPRateLimiter(rate.Limit(CreateRate), CreateBurst)
 	joinLimiter := limiter.NewIPRateLimiter(rate.Limit(JoinRate), JoinBurst)
 
 	r := chi.NewRouter()
 
-	// Configure WebSocket upgrader with origin checking based on allowed origins
 	allowedOrigins := make(map[string]struct{})
 	for _, origin := range deps.Config.AllowedOrigins {
 		allowedOrigins[origin] = struct{}{}
@@ -76,7 +67,6 @@ func Router(deps *AppDeps) http.Handler {
 		corsAllowedOrigins = deps.Config.AllowedOrigins
 	}
 
-	// Apply CORS middleware
 	c := cors.New(cors.Options{
 		AllowedOrigins:   corsAllowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
@@ -92,7 +82,6 @@ func Router(deps *AppDeps) http.Handler {
 	r.Use(logx.RequestLogger())
 	r.Use(middleware.Recoverer)
 
-	// Health check endpoint
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		logx.Info("Health check endpoint hit")
 
@@ -104,24 +93,28 @@ func Router(deps *AppDeps) http.Handler {
 	})
 
 	r.Route("/api", func(api chi.Router) {
-		// Middleware to extract identity from JWT for all /api routes
 		api.Use(jwt.IdentityExtractorMiddleware(deps.Config.JWTSecret))
 
-		// Auth
-		api.Post("/auth/register", HandleRegister(deps))
-		api.Post("/auth/login", HandleLogin(deps))
+		api.Route("/auth", func(auth chi.Router) {
+			auth.Post("/register", HandleRegister(deps))
+			auth.Post("/login", HandleLogin(deps))
+			auth.Post("/change-password", HandleChangePassword(deps))
+		})
 
-		// Chat
+		api.Route("/user", func(user chi.Router) {
+			user.Get("/profile", HandleGetUserProfile(deps))
+			user.Post("/avatar/presign", HandlePresignAvatarURL(deps))
+			user.Post("/profile", HandleUpdateUserProfile(deps))
+		})
+
 		rateLimitedCreateHandler := createLimiter.Middleware(HandleCreateRoom(deps))
 		api.Post("/chat/create", http.HandlerFunc(rateLimitedCreateHandler.ServeHTTP))
 		api.Post("/chat/join", HandleJoinRoom(deps))
 
-		// File
-		api.Post("/file/presign-upload", HandlePresignUploadURL(deps))
+		api.Post("/file/presign-upload", HandlePresignChatMessageURL(deps))
 		api.Get("/file/presign-download", HandlePresignDownloadURL(deps))
 	})
 
-	// WebSocket
 	r.Get("/ws/{code}", HandleWebSocket(wsUpgrader, joinLimiter, deps))
 
 	return r

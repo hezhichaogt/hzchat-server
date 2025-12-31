@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"hzchat/internal/app/chat"
 	"hzchat/internal/pkg/auth/jwt"
@@ -16,15 +17,13 @@ import (
 	"github.com/google/uuid"
 )
 
-type PresignUploadInput struct {
+type PresignChatMessageInput struct {
 	FileName string `json:"fileName"`
 	MimeType string `json:"mimeType"`
 	FileSize int64  `json:"fileSize"`
 }
 
-// HandlePresignUploadURL creates an HTTP HandlerFunc to generate a time-limited,
-// pre-signed URL for file upload, scoped to a specific room.
-func HandlePresignUploadURL(deps *AppDeps) http.HandlerFunc {
+func HandlePresignChatMessageURL(deps *AppDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		identity := jwt.GetPayloadFromContext(r)
 
@@ -39,7 +38,7 @@ func HandlePresignUploadURL(deps *AppDeps) http.HandlerFunc {
 			return
 		}
 
-		var input PresignUploadInput
+		var input PresignChatMessageInput
 		if customErr := req.BindJSON(r, &input); customErr != nil {
 			resp.RespondError(w, r, customErr)
 			return
@@ -59,7 +58,7 @@ func HandlePresignUploadURL(deps *AppDeps) http.HandlerFunc {
 		fileID := uuid.New().String()
 		fileKey := fmt.Sprintf("%s/%s%s", identity.Code, fileID, fileExt)
 
-		url, err := deps.StorageService.PresignUpload(
+		url, err := deps.PrivateStorage.PresignUpload(
 			r.Context(),
 			fileKey,
 			input.MimeType,
@@ -80,8 +79,57 @@ func HandlePresignUploadURL(deps *AppDeps) http.HandlerFunc {
 	}
 }
 
-// HandlePresignDownloadURL creates an HTTP HandlerFunc to generate a time-limited,
-// pre-signed URL for file download, scoped to a specific room.
+type PresignAvatarInput struct {
+	MimeType string `json:"mimeType"`
+	FileSize int64  `json:"fileSize"`
+}
+
+func HandlePresignAvatarURL(deps *AppDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		identity := jwt.GetPayloadFromContext(r)
+		if identity == nil || identity.UserType != "registered" {
+			resp.RespondError(w, r, errs.NewError(errs.ErrUnauthorized))
+			return
+		}
+
+		var input PresignAvatarInput
+		if err := req.BindJSON(r, &input); err != nil {
+			resp.RespondError(w, r, err)
+			return
+		}
+
+		if input.MimeType != "image/webp" {
+			resp.RespondError(w, r, errs.NewError(errs.ErrUnsupportedMediaType))
+			return
+		}
+
+		if input.FileSize > 1*1024*1024 {
+			resp.RespondError(w, r, errs.NewError(errs.ErrFileSizeTooLarge))
+			return
+		}
+
+		fileKey := fmt.Sprintf("avatars/%s/%d.webp", identity.ID, time.Now().Unix())
+
+		url, err := deps.PublicStorage.PresignUpload(
+			r.Context(),
+			fileKey,
+			input.MimeType,
+			input.FileSize,
+			15*time.Minute,
+		)
+
+		if err != nil {
+			resp.RespondError(w, r, errs.NewError(errs.ErrFileStorageFailed))
+			return
+		}
+
+		resp.RespondSuccess(w, r, map[string]any{
+			"presignedUrl": url,
+			"fileKey":      fileKey,
+		})
+	}
+}
+
 func HandlePresignDownloadURL(deps *AppDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		identity := jwt.GetPayloadFromContext(r)
@@ -110,7 +158,7 @@ func HandlePresignDownloadURL(deps *AppDeps) http.HandlerFunc {
 			return
 		}
 
-		url, err := deps.StorageService.PresignDownload(
+		url, err := deps.PrivateStorage.PresignDownload(
 			r.Context(),
 			fileKey,
 			chat.PresignedURLDuration,

@@ -27,8 +27,8 @@ func newS3Client(cfg ServiceConfig) (*s3Client, error) {
 	// Load Configuration
 	sdkCfg, err := config.LoadDefaultConfig(context.TODO(),
 		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
-			cfg.S3AccessKeyID,
-			cfg.S3SecretAccessKey,
+			cfg.AccessKeyID,
+			cfg.SecretAccessKey,
 			"",
 		)),
 		config.WithRegion("auto"),
@@ -40,7 +40,7 @@ func newS3Client(cfg ServiceConfig) (*s3Client, error) {
 
 	// Create S3 Client with Custom Endpoint Resolver.
 	client := s3.NewFromConfig(sdkCfg, func(o *s3.Options) {
-		o.BaseEndpoint = aws.String(cfg.S3Endpoint)
+		o.BaseEndpoint = aws.String(cfg.Endpoint)
 		o.UsePathStyle = true
 	})
 
@@ -62,10 +62,10 @@ func (c *s3Client) PresignUpload(
 	presignClient := s3.NewPresignClient(c.s3Client)
 
 	presignInput := &s3.PutObjectInput{
-		Bucket:        &c.cfg.S3BucketName,
+		Bucket:        &c.cfg.BucketName,
 		Key:           &key,
 		ContentType:   &mimeType,
-		ContentLength: &fileSize,
+		ContentLength: aws.Int64(fileSize),
 	}
 
 	resp, err := presignClient.PresignPutObject(
@@ -87,7 +87,7 @@ func (c *s3Client) PresignDownload(ctx context.Context, key string, duration tim
 	presignClient := s3.NewPresignClient(c.s3Client)
 
 	presignInput := &s3.GetObjectInput{
-		Bucket: &c.cfg.S3BucketName,
+		Bucket: &c.cfg.BucketName,
 		Key:    &key,
 	}
 
@@ -103,7 +103,7 @@ func (c *s3Client) PresignDownload(ctx context.Context, key string, duration tim
 // Delete removes the file specified by the given key from the bucket.
 func (c *s3Client) Delete(ctx context.Context, key string) error {
 	_, err := c.s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
-		Bucket: &c.cfg.S3BucketName,
+		Bucket: &c.cfg.BucketName,
 		Key:    &key,
 	})
 
@@ -118,7 +118,7 @@ func (c *s3Client) Delete(ctx context.Context, key string) error {
 // GetObjectMetadata retrieves the metadata of an object.
 func (c *s3Client) GetObjectMetadata(ctx context.Context, key string) (map[string]string, error) {
 	resp, err := c.s3Client.HeadObject(ctx, &s3.HeadObjectInput{
-		Bucket: &c.cfg.S3BucketName,
+		Bucket: &c.cfg.BucketName,
 		Key:    &key,
 	})
 

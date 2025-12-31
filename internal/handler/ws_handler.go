@@ -18,7 +18,6 @@ import (
 	"hzchat/internal/pkg/resp"
 )
 
-// HandleWebSocket creates an HTTP HandlerFunc to process WebSocket connection requests.
 func HandleWebSocket(upgrader websocket.Upgrader, rateLimiter *limiter.IPRateLimiter, deps *AppDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ip, _, err := net.SplitHostPort(r.RemoteAddr)
